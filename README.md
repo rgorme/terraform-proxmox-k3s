@@ -1,138 +1,115 @@
-# Terraform Proxmox Ansible K3s
+# Terraform Proxmox K3s
 
-This repository contains Terraform config to automatically provision a lightweight Kubernetes cluster using k3s on Proxmox VE. It creates a cluster with one master node and two worker nodes, all running Ubuntu Server.
+This repository adopts and manages an existing K3s cluster on Proxmox VE.
 
-My primary goal is reproducability. I try to achieve this by:
-- Infrastructure as Code (IaC) using Terraform to create and manage VMs in Proxmox
-- Configuration management with Ansible to consistently deploy and configure K3s across nodes
+Terraform owns the four K3s VMs. Ansible manages their OS prerequisites and
+K3s installation. The `k3s-support` VM (`192.168.1.16`) remains external: it
+hosts MariaDB and Nginx, which load-balances the Kubernetes API to both K3s
+servers.
 
-## Architecture
+## Managed Infrastructure
 
-The infrastructure consists of:
-- 1 k3s master node (VM ID: 200)
-- 2 k3s worker nodes (VM IDs: 201, 202)
-- All nodes are created from an Ubuntu cloud image template
-- Nodes are configured with static IP addresses
-- All VMs are placed in a dedicated Proxmox resource pool named "k3s"
+| Role | VM ID | Name | Proxmox node | Address | Datastore |
+| --- | --- | --- | --- | --- | --- |
+| Server | 102 | `k3s-master-0` | `prox01` | `192.168.1.17` | `local-lvm` |
+| Server | 101 | `k3s-master-1` | `prox02` | `192.168.1.18` | `local-lvm` |
+| Worker | 104 | `k3s-worker-0` | `prox01` | `192.168.1.32` | `zvmdata` |
+| Worker | 103 | `k3s-worker-1` | `prox02` | `192.168.1.33` | `zvmdata` |
 
-## Prerequisites
+All VMs belong to pool `k3s`, were cloned from template `9001`
+(`ubuntu-2404-CI`), use the `k3s` login user, and have a common default gateway
+of `192.168.1.1`.
 
-1. Proxmox VE server (tested with version 8.x)
-2. SSH key pair for VM access
-3. Ubuntu cloud image template in Proxmox
-4. Terraform installed locally
-5. Proxmox API token with appropriate permissions
-6. Ansible installed locally (for k3s setup)
+## Terraform Adoption
 
-## Quick Start
+`main.tf` has `prevent_destroy = true` on every K3s VM. Terraform cannot
+destroy or replace an adopted VM unless that protection is deliberately removed.
+It also ignores clone metadata, cloud-init passwords, and the obsolete USB
+device on `k3s-worker-1` during initial adoption.
 
-1. Clone this repository
-2. Copy `terraform.tfvars.example` to `terraform.tfvars`:
-   ```bash
-   cp terraform.tfvars.example terraform.tfvars
-   ```
-3. Edit `terraform.tfvars` with your specific configuration:
-   - Proxmox API credentials
-   - Network settings
-   - SSH public key
-   - VM resource allocations
+Create an ignored local variables file from the example:
 
-4. Initialize and apply Terraform:
-   ```bash
-   terraform init
-   terraform plan
-   terraform apply
-   ```
-
-5. Set up k3s using Ansible:
-   ```bash
-   cd ansible
-   ansible-playbook -i hosts setup-k3s.yml
-   ```
-
-## Detailed Setup Instructions
-
-### 1. Create Ubuntu Cloud Image Template
-
-First, create the Ubuntu cloud image template in Proxmox:
-
-```bash
-# Download Ubuntu Cloud Image
-wget https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img
-
-# Install libguestfs-tools
-apt-get install -y libguestfs-tools
-
-# Create VM template (ID 9000)
-qm create 9000 --name ubuntu-cloud-init-template --memory 2048 --cores 2 --net0 virtio,bridge=vmbr0
-qm importdisk 9000 focal-server-cloudimg-amd64.img local-zfs
-qm set 9000 --scsihw virtio-scsi-pci --scsi0 local-zfs:vm-9000-disk-0
-qm set 9000 --ide2 local-zfs:cloudinit
-qm set 9000 --boot c --bootdisk scsi0
-qm set 9000 --agent 1
-qm template 9000
+```sh
+cp terraform.tfvars.example terraform.tfvars
 ```
 
-### 2. Configure Terraform Variables
+Set `ssh_public_key` to the public key already configured by cloud-init and set
+the Proxmox token secret. The token ID is:
 
-Edit `terraform.tfvars` with your specific settings
+```hcl
+proxmox_api_token_id = "terraform-prov@pve!terraform-token-new"
+```
 
-### 3. Deploy Infrastructure
+Initialize and import the existing pool and VMs. Imports only write Terraform
+state; they do not change the Proxmox resources.
 
-Run Terraform to create the infrastructure:
-
-```bash
+```sh
 terraform init
+terraform import proxmox_virtual_environment_pool.k3s_pool k3s
+terraform import 'proxmox_virtual_environment_vm.k3s["master_0"]' prox01/102
+terraform import 'proxmox_virtual_environment_vm.k3s["master_1"]' prox02/101
+terraform import 'proxmox_virtual_environment_vm.k3s["worker_0"]' prox01/104
+terraform import 'proxmox_virtual_environment_vm.k3s["worker_1"]' prox02/103
 terraform plan
-terraform apply
 ```
 
-### 4. Configure Ansible
+Do not run `terraform apply` while the plan includes a destroy, replacement,
+network-device removal, disk move, or unexpected cloud-init change. Resolve
+each difference in configuration first. Back up the resulting local
+`terraform.tfstate` until a remote backend is configured.
 
-The Ansible playbooks are located in the `ansible` directory. The setup process is automated and will:
+## K3s Management
 
-1. Configure all nodes with:
-   - System updates
-   - Required packages
-   - Disabled swap
-   - Required kernel modules and parameters
+K3s settings are managed in `/etc/rancher/k3s/config.yaml`, not in custom
+systemd `ExecStart` definitions. The official K3s installer owns the service
+units, making normal installer-based upgrades possible.
 
-2. Set up the master node with:
-   - k3s server installation
-   - Systemd service configuration
-   - Automatic kubeconfig generation
+The shared API endpoint is `https://192.168.1.16:6443`; Nginx on the external
+support VM forwards TCP traffic to both servers. Server configuration retains:
 
-3. Configure worker nodes with:
-   - k3s agent installation
-   - Systemd service configuration
-   - Automatic cluster joining
+- the shared K3s token;
+- the external MariaDB datastore endpoint;
+- `192.168.1.16` as a TLS SAN;
+- Traefik disabled; and
+- the `CriticalAddonsOnly=true:NoExecute` server taint.
 
-To run the setup:
+The playbook pins every node to `v1.36.2+k3s1`. This first brings the workers
+from `v1.32.5+k3s1` into supported version skew with the servers. Workers run
+serially and the playbook waits for each one to become `Ready` before moving to
+the next.
 
-```bash
+Create local Ansible configuration and encrypted secrets:
+
+```sh
 cd ansible
-ansible-playbook -i hosts setup-k3s.yml
+cp ansible.cfg.example ansible.cfg
+cp secrets.yml.example secrets.yml
+ansible-vault encrypt secrets.yml
 ```
 
-The playbook will automatically:
-- Use the correct IP addresses from your Terraform configuration
-- Generate and save the kubeconfig file locally
-- Configure all necessary system requirements
-- Set up the complete k3s cluster
+Set the private-key path in `ansible.cfg`. Replace the placeholders in
+`secrets.yml` with the existing K3s token and MariaDB connection string before
+encrypting it. Do not reset either secret during migration.
 
-## Post-Deployment
+Review the playbook before the first live run, then execute it with an
+interactive Vault password prompt:
 
-After the infrastructure and k3s are set up:
+```sh
+ansible-playbook setup-k3s.yml --ask-vault-pass
+```
 
-1. Access the cluster:
-   ```bash
-   # The kubeconfig file will be automatically saved in the ansible directory
-   export KUBECONFIG=./ansible/k3s.yaml
-   kubectl get nodes
-   ```
+Validate the result from either server:
 
-2. Verify the cluster:
-   ```bash
-   kubectl get nodes
-   kubectl get pods -A
-   ```
+```sh
+sudo k3s kubectl get nodes -o wide
+sudo k3s kubectl get pods -A
+```
+
+## Deliberate Follow-up Work
+
+- Remove the obsolete USB passthrough from VM `103` in its own reviewed change.
+- Move Terraform state to a remote backend with locking and encrypted backups.
+- Add backup and restore automation for the external single-instance MariaDB
+  datastore and Nginx configuration on `k3s-support`.
+- Upgrade K3s only one minor version at a time, with a cluster health check
+  between each version.

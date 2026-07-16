@@ -26,9 +26,6 @@ override.tf.json
 .terraformrc
 terraform.rc
 
-# Ignore lock files
-.terraform.lock.hcl
-
 # Ignore any local backup files
 *.backup
 
@@ -41,6 +38,10 @@ terraform.rc
 .idea/
 *.swp
 *.swo
+
+# Local Ansible credentials and encrypted cluster secrets
+ansible/ansible.cfg
+ansible/secrets.yml
 
 # Ignore any local OS files
 .DS_Store

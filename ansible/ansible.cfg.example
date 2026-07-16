@@ -1,0 +1,5 @@
+[defaults]
+inventory = hosts
+private_key_file = /path/to/your/private/key
+host_key_checking = True
+interpreter_python = auto_silent

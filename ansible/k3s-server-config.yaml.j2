@@ -1,0 +1,8 @@
+disable:
+  - traefik
+tls-san:
+  - {{ k3s_api_endpoint_host | to_json }}
+token: {{ k3s_token | to_json }}
+node-taint:
+  - "CriticalAddonsOnly=true:NoExecute"
+datastore-endpoint: {{ k3s_datastore_endpoint | to_json }}

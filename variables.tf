@@ -4,67 +4,29 @@ variable "proxmox_api_url" {
 }
 
 variable "proxmox_api_token_id" {
-  description = "Proxmox API token ID"
+  description = "Proxmox API token ID in user@realm!token-name form"
   type        = string
 }
 
 variable "proxmox_api_token_secret" {
   description = "Proxmox API token secret"
   type        = string
-}
-
-variable "proxmox_node" {
-  description = "Proxmox node name"
-  type        = string
-}
-
-variable "template_name" {
-  description = "Name of the VM template to clone"
-  type        = string
-  default     = "ubuntu-cloud-init-template"
+  sensitive   = true
 }
 
 variable "template_vm_id" {
-  description = "ID of the VM template to clone"
+  description = "ID of the Ubuntu 24.04 cloud-init template used to create K3s VMs"
   type        = number
-  default     = 9000
+  default     = 9001
 }
 
 variable "ssh_public_key" {
-  description = "SSH public key for VM access"
+  description = "SSH public key configured by Proxmox cloud-init"
   type        = string
 }
 
-variable "kubernetes_master" {
-  description = "Kubernetes master node configuration"
-  type        = object({
-    ip      = string
-  })
-  default     = {
-    ip        = "192.168.30.100/24"
-  }
-}
-
-variable "kubernetes_workers" {
-  description = "Kubernetes worker nodes configuration"
-  type        = object({
-    ip_start  = number
-  })
-  default     = {
-    ip_start  = 101
-  }
-}
-
-variable "network_config" {
-  description = "Network configuration for Kubernetes cluster"
-  type        = object({
-    bridge = string
-    subnet = string
-    gateway = string
-  })
-  default     = {
-    bridge = "vmbr0"
-    subnet = "192.168.30.0/24"
-    gateway = "192.168.30.1"
-  }
+variable "network_gateway" {
+  description = "IPv4 default gateway for K3s VMs"
+  type        = string
+  default     = "192.168.1.1"
 }

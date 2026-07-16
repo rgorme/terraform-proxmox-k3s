@@ -1,166 +1,182 @@
 ---
-# This playbook sets up a K3s cluster with one master and two worker nodes
-# Usage: ansible-playbook -i hosts setup-k3s.yml
+# K3s settings live in /etc/rancher/k3s/config.yaml so re-running the official
+# installer does not need to persist operational flags in a systemd unit.
 
-- name: Configure all nodes with basic requirements
+- name: Configure K3s prerequisites
   hosts: all
   become: true
   gather_facts: true
-  vars:
-    k3s_version: "v1.28.4+k3s2"
-    k3s_master_ip: "192.168.30.100"
   tasks:
-    - name: Update system packages
-      apt:
-        update_cache: yes
-        cache_valid_time: 3600
-
     - name: Install required packages
-      apt:
-        name: 
-          - apt-transport-https
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+        name:
           - ca-certificates
           - curl
-          - gnupg
-          - lsb-release
-          - net-tools
         state: present
 
-    - name: Disable swap
-      command: swapoff -a
+    - name: Disable active swap
+      ansible.builtin.command: swapoff -a
       when: ansible_swaptotal_mb > 0
+      changed_when: true
 
-    - name: Disable swap permanently
-      lineinfile:
+    - name: Disable swap in fstab
+      ansible.builtin.lineinfile:
         path: /etc/fstab
         regexp: '^([^#].*?\sswap\s+sw\s+.*)$'
         line: '# \1'
         state: present
 
+    - name: Persist required kernel modules
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k3s.conf
+        mode: '0644'
+        content: |
+          overlay
+          br_netfilter
+
     - name: Load required kernel modules
-      modprobe:
+      ansible.builtin.modprobe:
         name: "{{ item }}"
         state: present
-      with_items:
+      loop:
         - overlay
         - br_netfilter
 
-    - name: Configure kernel parameters
-      sysctl:
-        name: "{{ item.key }}"
-        value: "{{ item.value }}"
-        state: present
-        reload: yes
-      with_items:
-        - { key: 'net.bridge.bridge-nf-call-iptables', value: '1' }
-        - { key: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
-        - { key: 'net.ipv4.ip_forward', value: '1' }
+    - name: Configure Kubernetes kernel parameters
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/90-k3s.conf
+        mode: '0644'
+        content: |
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward = 1
 
-- name: Configure K3s master node
-  hosts: k3s_master
+    - name: Apply kernel parameters
+      ansible.builtin.command: sysctl --system
+      changed_when: false
+
+- name: Configure K3s servers
+  hosts: k3s_masters
+  serial: 1
   become: true
-  gather_facts: true
+  gather_facts: false
+  vars_files:
+    - secrets.yml
   vars:
-    k3s_version: "v1.31.6+k3s1"
-    k3s_master_ip: "192.168.30.100"
+    k3s_version: v1.36.2+k3s1
+    k3s_api_endpoint: https://192.168.1.16:6443
+    k3s_api_endpoint_host: 192.168.1.16
   tasks:
-    - name: Download K3s binary
-      get_url:
-        url: "https://github.com/k3s-io/k3s/releases/download/{{ k3s_version }}/k3s"
-        dest: /usr/local/bin/k3s
-        mode: '0755'
+    - name: Create K3s configuration directory
+      ansible.builtin.file:
+        path: /etc/rancher/k3s
+        state: directory
+        mode: '0700'
 
-    - name: Create K3s service file
-      template:
-        src: k3s.service.j2
-        dest: /etc/systemd/system/k3s.service
-        mode: '0644'
+    - name: Configure K3s server
+      ansible.builtin.template:
+        src: k3s-server-config.yaml.j2
+        dest: /etc/rancher/k3s/config.yaml
+        mode: '0600'
+      notify: Restart K3s server
 
-    - name: Reload systemd
-      systemd:
-        daemon_reload: yes
-
-    - name: Start and enable K3s service
-      systemd:
-        name: k3s
-        state: started
-        enabled: yes
-
-    - name: Wait for K3s to be ready
-      wait_for:
-        port: 6443
-        timeout: 300
-
-    - name: Get K3s node token
-      command: cat /var/lib/rancher/k3s/server/node-token
-      register: k3s_node_token
+    - name: Read installed K3s version
+      ansible.builtin.command: /usr/local/bin/k3s --version
+      register: k3s_installed_version
       changed_when: false
+      failed_when: false
 
-    - name: Set k3s token
-      set_fact:
-        k3s_token: "{{ k3s_node_token.stdout }}"
+    - name: Install pinned K3s server version
+      ansible.builtin.shell: curl -sfL https://get.k3s.io | sh -
+      args:
+        executable: /bin/sh
+      environment:
+        INSTALL_K3S_EXEC: server
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+      when: k3s_version not in k3s_installed_version.stdout
+      notify: Restart K3s server
 
-    - name: Get kubeconfig
-      command: cat /etc/rancher/k3s/k3s.yaml
-      register: kubeconfig
-      changed_when: false
+    - name: Flush K3s server handlers
+      ansible.builtin.meta: flush_handlers
 
-    - name: Replace localhost with master IP in kubeconfig
-      set_fact:
-        kubeconfig_content: "{{ kubeconfig.stdout | replace('127.0.0.1', k3s_master_ip) }}"
-
-    - name: Save kubeconfig locally
-      copy:
-        content: "{{ kubeconfig_content }}"
-        dest: "./k3s.yaml"
-        mode: '0644'
-      delegate_to: localhost
-      become: false
+    - name: Wait for the local K3s API
+      ansible.builtin.uri:
+        url: https://127.0.0.1:6443/healthz
+        validate_certs: false
+        status_code: 401
+      register: k3s_api_health
+      retries: 30
+      delay: 10
+      until: k3s_api_health.status == 401
 
   handlers:
-    - name: restart k3s
-      systemd:
+    - name: Restart K3s server
+      ansible.builtin.systemd_service:
         name: k3s
         state: restarted
+        enabled: true
+        daemon_reload: true
 
-- name: Configure K3s worker nodes
+- name: Configure K3s workers
   hosts: k3s_workers
+  serial: 1
   become: true
-  gather_facts: true
+  gather_facts: false
+  vars_files:
+    - secrets.yml
   vars:
-    k3s_version: "v1.31.6+k3s1"
-    k3s_master_ip: "192.168.30.100"
-    k3s_token: "{{ hostvars[groups['k3s_master'][0]]['k3s_token'] }}"
+    k3s_version: v1.36.2+k3s1
+    k3s_api_endpoint: https://192.168.1.16:6443
   tasks:
-    - name: Download K3s binary
-      get_url:
-        url: "https://github.com/k3s-io/k3s/releases/download/{{ k3s_version }}/k3s"
-        dest: /usr/local/bin/k3s
-        mode: '0755'
+    - name: Create K3s configuration directory
+      ansible.builtin.file:
+        path: /etc/rancher/k3s
+        state: directory
+        mode: '0700'
 
-    - name: Create K3s agent service file
-      template:
-        src: k3s-agent.service.j2
-        dest: /etc/systemd/system/k3s-agent.service
-        mode: '0644'
-      vars:
-        K3S_URL: "https://{{ k3s_master_ip }}:6443"
+    - name: Configure K3s agent
+      ansible.builtin.template:
+        src: k3s-agent-config.yaml.j2
+        dest: /etc/rancher/k3s/config.yaml
+        mode: '0600'
+      notify: Restart K3s agent
 
-    - name: Reload systemd
-      systemd:
-        daemon_reload: yes
+    - name: Read installed K3s version
+      ansible.builtin.command: /usr/local/bin/k3s --version
+      register: k3s_installed_version
+      changed_when: false
+      failed_when: false
 
-    - name: Start and enable K3s agent service
-      systemd:
-        name: k3s-agent
-        state: started
-        enabled: yes
+    - name: Install pinned K3s agent version
+      ansible.builtin.shell: curl -sfL https://get.k3s.io | sh -
+      args:
+        executable: /bin/sh
+      environment:
+        INSTALL_K3S_EXEC: agent
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+      when: k3s_version not in k3s_installed_version.stdout
+      notify: Restart K3s agent
+
+    - name: Flush K3s agent handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for worker to become Ready
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl get node {{ inventory_hostname }}
+        -o jsonpath={.status.conditions[?(@.type=="Ready")].status}
+      delegate_to: "{{ groups['k3s_masters'][0] }}"
+      register: k3s_worker_ready
+      changed_when: false
+      retries: 30
+      delay: 10
+      until: k3s_worker_ready.stdout == 'True'
 
   handlers:
-    - name: restart k3s-agent
-      systemd:
+    - name: Restart K3s agent
+      ansible.builtin.systemd_service:
         name: k3s-agent
         state: restarted
-        daemon_reload: yes
-      async: 300  # 5 minute timeout
-      poll: 5     # Check every 5 seconds 
+        enabled: true
+        daemon_reload: true

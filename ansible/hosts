@@ -1,10 +1,10 @@
-[k3s_master]
-k3s-master ansible_host=192.168.30.100
+[k3s_masters]
+k3s-master-0 ansible_host=192.168.1.17
+k3s-master-1 ansible_host=192.168.1.18
 
 [k3s_workers]
-k3s-worker-1 ansible_host=192.168.30.101
-k3s-worker-2 ansible_host=192.168.30.102
+k3s-worker-0 ansible_host=192.168.1.32
+k3s-worker-1 ansible_host=192.168.1.33
 
 [all:vars]
-ansible_user=ubuntu
-ansible_ssh_private_key_file=../ssh/id_rsa
+ansible_user=k3s
