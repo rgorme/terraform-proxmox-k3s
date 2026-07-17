@@ -3,18 +3,11 @@
 This repository adopts and manages an existing K3s cluster on Proxmox VE.
 
 Terraform owns the four K3s VMs. Ansible manages their OS prerequisites and
-K3s installation. The `k3s-support` VM (`192.168.1.16`) remains external: it
+K3s installation. The `k3s-support` VM remains external: it
 hosts MariaDB and Nginx, which load-balances the Kubernetes API to both K3s
 servers.
 
 ## Managed Infrastructure
-
-| Role | VM ID | Name | Proxmox node | Address | Datastore |
-| --- | --- | --- | --- | --- | --- |
-| Server | 102 | `k3s-master-0` | `prox01` | `192.168.1.17` | `local-lvm` |
-| Server | 101 | `k3s-master-1` | `prox02` | `192.168.1.18` | `local-lvm` |
-| Worker | 104 | `k3s-worker-0` | `prox01` | `192.168.1.32` | `zvmdata` |
-| Worker | 103 | `k3s-worker-1` | `prox02` | `192.168.1.33` | `zvmdata` |
 
 All VMs belong to pool `k3s`, were cloned from template `9001`
 (`ubuntu-2404-CI`), use the `k3s` login user, and have a common default gateway
@@ -64,12 +57,11 @@ K3s settings are managed in `/etc/rancher/k3s/config.yaml`, not in custom
 systemd `ExecStart` definitions. The official K3s installer owns the service
 units, making normal installer-based upgrades possible.
 
-The shared API endpoint is `https://192.168.1.16:6443`; Nginx on the external
+The shared API endpoint is on the support vm Nginx on the external
 support VM forwards TCP traffic to both servers. Server configuration retains:
 
 - the shared K3s token;
 - the external MariaDB datastore endpoint;
-- `192.168.1.16` as a TLS SAN;
 - Traefik disabled; and
 - the `CriticalAddonsOnly=true:NoExecute` server taint.
 

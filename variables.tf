@@ -28,5 +28,17 @@ variable "ssh_public_key" {
 variable "network_gateway" {
   description = "IPv4 default gateway for K3s VMs"
   type        = string
-  default     = "192.168.1.1"
+}
+
+variable "k3s_vms" {
+  description = "K3s VM definitions keyed by stable Terraform resource name."
+  type = map(object({
+    vm_id      = number
+    name       = string
+    node_name  = string
+    datastore  = string
+    disk_size  = number
+    ip_address = string
+    memory_mib = number
+  }))
 }
