@@ -43,13 +43,14 @@ resource "proxmox_virtual_environment_vm" "k3s" {
   }
 
   clone {
-    vm_id = var.template_vm_id
+    vm_id     = var.template_vm_id
+    node_name = var.template_vm_node_name
     full  = true
   }
 
   cpu {
-    cores   = 2
-    sockets = 1
+    cores   = each.value.cpu_core
+    sockets = each.value.cpu_socket
     type    = "host"
   }
 

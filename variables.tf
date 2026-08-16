@@ -20,6 +20,12 @@ variable "template_vm_id" {
   default     = 9001
 }
 
+variable "template_vm_node_name" {
+  description = "Name of the node that holds the template VM"
+  type        = string
+  default     = "prox01"
+}
+
 variable "ssh_public_key" {
   description = "SSH public key configured by Proxmox cloud-init"
   type        = string
@@ -40,5 +46,7 @@ variable "k3s_vms" {
     disk_size  = number
     ip_address = string
     memory_mib = number
+    cpu_core   = number
+    cpu_socket = number
   }))
 }

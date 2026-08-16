@@ -6,6 +6,8 @@
   hosts: all
   become: true
   gather_facts: true
+  tags:
+    - prerequisites
   tasks:
     - name: Install required packages
       ansible.builtin.apt:
@@ -14,11 +16,13 @@
         name:
           - ca-certificates
           - curl
+          - qemu-guest-agent
+          - nfs-common
         state: present
 
     - name: Disable active swap
       ansible.builtin.command: swapoff -a
-      when: ansible_swaptotal_mb > 0
+      when: ansible_facts['swaptotal_mb'] > 0
       changed_when: true
 
     - name: Disable swap in fstab
@@ -57,6 +61,12 @@
       ansible.builtin.command: sysctl --system
       changed_when: false
 
+    - name: Start QEMU Guest Agent
+      ansible.builtin.systemd_service:
+        name: qemu-guest-agent
+        state: started
+        enabled: true
+
 - name: Configure K3s servers
   hosts: k3s_masters
   serial: 1
@@ -64,10 +74,10 @@
   gather_facts: false
   vars_files:
     - secrets.yml
-  vars:
-    k3s_version: v1.36.2+k3s1
-    k3s_api_endpoint: https://192.168.1.16:6443
-    k3s_api_endpoint_host: 192.168.1.16
+  # vars:
+  #   k3s_version: "{{ k3s_version }}"
+  #   k3s_api_endpoint: "{{ k3s_api_endpoint }}"
+  #   k3s_api_endpoint_host: "{{ k3s_api_endpoint_host }}"
   tasks:
     - name: Create K3s configuration directory
       ansible.builtin.file:
@@ -127,8 +137,8 @@
   vars_files:
     - secrets.yml
   vars:
-    k3s_version: v1.36.2+k3s1
-    k3s_api_endpoint: https://192.168.1.16:6443
+    # k3s_version: "{{ k3s_version }}"
+    # k3s_api_endpoint: "{{ k3s_api_endpoint }}"
   tasks:
     - name: Create K3s configuration directory
       ansible.builtin.file:
@@ -156,7 +166,9 @@
       environment:
         INSTALL_K3S_EXEC: agent
         INSTALL_K3S_VERSION: "{{ k3s_version }}"
-      when: k3s_version not in k3s_installed_version.stdout
+      when:
+        - k3s_installed_version.rc != 0 or
+          k3s_version not in (k3s_installed_version.stdout | default(''))
       notify: Restart K3s agent
 
     - name: Flush K3s agent handlers
@@ -165,13 +177,16 @@
     - name: Wait for worker to become Ready
       ansible.builtin.command: >-
         /usr/local/bin/k3s kubectl get node {{ inventory_hostname }}
-        -o jsonpath={.status.conditions[?(@.type=="Ready")].status}
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
       delegate_to: "{{ groups['k3s_masters'][0] }}"
       register: k3s_worker_ready
       changed_when: false
       retries: 30
       delay: 10
-      until: k3s_worker_ready.stdout == 'True'
+      until: k3s_worker_ready.stdout | trim == 'True'
+
+    - debug:
+        var: k3s_worker_ready
 
   handlers:
     - name: Restart K3s agent
