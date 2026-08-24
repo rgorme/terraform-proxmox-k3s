@@ -45,7 +45,7 @@ resource "proxmox_virtual_environment_vm" "k3s" {
   clone {
     vm_id     = var.template_vm_id
     node_name = var.template_vm_node_name
-    full  = true
+    full      = true
   }
 
   cpu {

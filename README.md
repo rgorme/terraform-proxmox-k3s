@@ -15,7 +15,7 @@ of `192.168.1.1`.
 
 ## Terraform Adoption
 
-`main.tf` has `prevent_destroy = true` on every K3s VM. Terraform cannot
+The Terraform configuration is in `k3s/`. Its `main.tf` has `prevent_destroy = true` on every K3s VM. Terraform cannot
 destroy or replace an adopted VM unless that protection is deliberately removed.
 It also ignores clone metadata, cloud-init passwords, and the obsolete USB
 device on `k3s-worker-1` during initial adoption.
@@ -23,6 +23,7 @@ device on `k3s-worker-1` during initial adoption.
 Create an ignored local variables file from the example:
 
 ```sh
+cd k3s
 cp terraform.tfvars.example terraform.tfvars
 ```
 
@@ -37,6 +38,7 @@ Initialize and import the existing pool and VMs. Imports only write Terraform
 state; they do not change the Proxmox resources.
 
 ```sh
+cd k3s
 terraform init
 terraform import proxmox_virtual_environment_pool.k3s_pool k3s
 terraform import 'proxmox_virtual_environment_vm.k3s["master_0"]' prox01/102
