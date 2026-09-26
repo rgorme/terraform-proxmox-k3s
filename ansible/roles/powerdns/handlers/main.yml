@@ -1,0 +1,21 @@
+---
+- name: Restart PowerDNS authoritative server
+  ansible.builtin.systemd_service:
+    name: pdns
+    state: restarted
+    daemon_reload: true
+
+- name: Restart PowerDNS recursor
+  ansible.builtin.systemd_service:
+    name: pdns-recursor
+    state: restarted
+
+- name: Restart dnsdist
+  ansible.builtin.systemd_service:
+    name: dnsdist
+    state: restarted
+
+- name: Reload SSH
+  ansible.builtin.systemd_service:
+    name: ssh
+    state: reloaded

@@ -1,0 +1,6 @@
+local-address=127.0.0.1
+local-port={{ powerdns_recursor_port }}
+allow-from=127.0.0.0/8
+forward-zones-recurse=.={{ powerdns_forwarder_ip }}
+quiet=yes
+version-string=anonymous

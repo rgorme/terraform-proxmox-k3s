@@ -1,0 +1,15 @@
+launch=gpgsql
+gpgsql-host={{ powerdns_postgresql_host }}
+gpgsql-dbname={{ powerdns_postgresql_database }}
+gpgsql-user={{ powerdns_postgresql_user }}
+gpgsql-password={{ powerdns_postgresql_password }}
+local-address=127.0.0.1
+local-port={{ powerdns_authoritative_port }}
+api=yes
+api-key={{ powerdns_api_key }}
+webserver=yes
+webserver-address=0.0.0.0
+webserver-port={{ powerdns_api_port }}
+webserver-allow-from=127.0.0.1,{{ powerdns_lan_network }}
+security-poll-suffix=
+version-string=anonymous

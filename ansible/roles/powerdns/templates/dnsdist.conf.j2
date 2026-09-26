@@ -1,0 +1,11 @@
+setLocal("0.0.0.0:53")
+setACL({"0.0.0.0/0", "::/0"})
+
+newServer({address="127.0.0.1:{{ powerdns_authoritative_port }}", name="authoritative", pool="authoritative"})
+newServer({address="127.0.0.1:{{ powerdns_recursor_port }}", name="recursor", pool="recursor"})
+
+local authoritativeZones = newSuffixMatchNode()
+authoritativeZones:add(newDNSName("{{ powerdns_zone }}."))
+addAction(SuffixMatchNodeRule(authoritativeZones), PoolAction("authoritative"))
+addAction(NotRule(OrRule({makeRule("127.0.0.0/8"), makeRule("{{ powerdns_lan_network }}")})), DropAction())
+addAction(AllRule(), PoolAction("recursor"))

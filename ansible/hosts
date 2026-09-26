@@ -8,5 +8,9 @@ k3s-worker-1 ansible_host=192.168.1.33
 k3s-worker-2 ansible_host=192.168.1.34
 k3s-worker-3 ansible_host=192.168.1.35
 
+[powerdns]
+powerdns01 ansible_host=192.168.1.61 ansible_user=root
+powerdns02 ansible_host=192.168.1.62 ansible_user=root
+
 [all:vars]
 ansible_user=k3s

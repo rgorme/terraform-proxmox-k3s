@@ -1,0 +1,8 @@
+powerdns_packages:
+  - dnsdist
+  - pdns-backend-pgsql
+  - pdns-recursor
+  - pdns-server
+  - postgresql-client
+
+powerdns_api_port: 8081

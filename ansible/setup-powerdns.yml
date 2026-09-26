@@ -1,0 +1,10 @@
+---
+- name: Configure highly available PowerDNS servers
+  hosts: powerdns
+  become: true
+  gather_facts: true
+  serial: 1
+  vars_files:
+    - secrets.yml
+  roles:
+    - powerdns

@@ -1,0 +1,10 @@
+powerdns_postgresql_host: 192.168.1.60
+powerdns_postgresql_database: powerdns
+powerdns_postgresql_user: powerdns
+powerdns_zone: gormsboel.dk
+powerdns_primary_nameserver: ns1.gormsboel.dk
+powerdns_secondary_nameserver: ns2.gormsboel.dk
+powerdns_authoritative_port: 5300
+powerdns_recursor_port: 5301
+powerdns_lan_network: 192.168.1.0/24
+powerdns_forwarder_ip: 192.168.1.1

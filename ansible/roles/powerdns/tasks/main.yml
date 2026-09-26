@@ -1,0 +1,205 @@
+---
+- name: Validate required PowerDNS secrets
+  ansible.builtin.assert:
+    that:
+      - powerdns_postgresql_password is defined
+      - powerdns_postgresql_password | length > 0
+      - powerdns_api_key is defined
+      - powerdns_api_key | length >= 32
+    fail_msg: >-
+      Set powerdns_postgresql_password and a 32-character-or-longer
+      powerdns_api_key in ansible/secrets.yml.
+  no_log: true
+
+- name: Install PowerDNS packages
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    name: "{{ powerdns_packages }}"
+    state: present
+
+- name: Create the PowerDNS systemd drop-in directory
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item }}.service.d"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - pdns
+    - pdns-recursor
+    - dnsdist
+
+- name: Configure LXC-compatible DNS service systemd overrides
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item }}.service.d/override.conf"
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Service]
+      PrivateDevices=no
+      PrivateTmp=no
+      ProtectControlGroups=no
+      ProtectHome=no
+      ProtectHostname=no
+      ProtectKernelLogs=no
+      ProtectKernelModules=no
+      ProtectKernelTunables=no
+      ProtectSystem=off
+  loop:
+    - pdns
+    - pdns-recursor
+    - dnsdist
+  notify:
+    - Restart PowerDNS authoritative server
+    - Restart PowerDNS recursor
+    - Restart dnsdist
+
+- name: Configure PowerDNS authoritative server
+  ansible.builtin.template:
+    src: pdns.conf.j2
+    dest: /etc/powerdns/pdns.conf
+    owner: root
+    group: pdns
+    mode: '0640'
+  notify: Restart PowerDNS authoritative server
+
+- name: Configure PowerDNS recursor
+  ansible.builtin.template:
+    src: recursor.conf.j2
+    dest: /etc/powerdns/recursor.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart PowerDNS recursor
+
+- name: Configure dnsdist
+  ansible.builtin.template:
+    src: dnsdist.conf.j2
+    dest: /etc/dnsdist/dnsdist.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart dnsdist
+
+- name: Check whether the PowerDNS schema exists
+  ansible.builtin.command:
+    argv:
+      - psql
+      - --host
+      - "{{ powerdns_postgresql_host }}"
+      - --username
+      - "{{ powerdns_postgresql_user }}"
+      - --dbname
+      - "{{ powerdns_postgresql_database }}"
+      - --tuples-only
+      - --no-align
+      - --command
+      - SELECT to_regclass('public.domains') IS NOT NULL;
+  environment:
+    PGPASSWORD: "{{ powerdns_postgresql_password }}"
+  register: powerdns_schema_exists
+  changed_when: false
+  no_log: true
+
+- name: Initialize the PowerDNS PostgreSQL schema
+  ansible.builtin.command:
+    argv:
+      - psql
+      - --host
+      - "{{ powerdns_postgresql_host }}"
+      - --username
+      - "{{ powerdns_postgresql_user }}"
+      - --dbname
+      - "{{ powerdns_postgresql_database }}"
+      - --file
+      - /usr/share/pdns-backend-pgsql/schema/schema.pgsql.sql
+  environment:
+    PGPASSWORD: "{{ powerdns_postgresql_password }}"
+  when: powerdns_schema_exists.stdout | trim != 't'
+  no_log: true
+
+- name: Check whether the authoritative zone exists
+  ansible.builtin.command:
+    argv:
+      - psql
+      - --host
+      - "{{ powerdns_postgresql_host }}"
+      - --username
+      - "{{ powerdns_postgresql_user }}"
+      - --dbname
+      - "{{ powerdns_postgresql_database }}"
+      - --tuples-only
+      - --no-align
+      - --command
+      - "SELECT EXISTS (SELECT 1 FROM domains WHERE name = '{{ powerdns_zone }}');"
+  environment:
+    PGPASSWORD: "{{ powerdns_postgresql_password }}"
+  register: powerdns_zone_exists
+  changed_when: false
+  when: inventory_hostname == ansible_play_hosts_all[0]
+  no_log: true
+
+- name: Create the authoritative zone
+  ansible.builtin.command:
+    argv:
+      - pdnsutil
+      - create-zone
+      - "{{ powerdns_zone }}"
+      - "{{ powerdns_primary_nameserver }}"
+  when:
+    - inventory_hostname == ansible_play_hosts_all[0]
+    - powerdns_zone_exists.stdout | trim == 'f'
+
+- name: Configure the authoritative zone SOA record
+  ansible.builtin.command:
+    argv:
+      - pdnsutil
+      - replace-rrset
+      - "{{ powerdns_zone }}"
+      - '@'
+      - SOA
+      - '3600'
+      - "{{ powerdns_primary_nameserver }}. hostmaster.{{ powerdns_zone }}. 1 10800 3600 604800 3600"
+  when: inventory_hostname == ansible_play_hosts_all[0]
+  changed_when: false
+
+- name: Configure the authoritative zone nameserver records
+  ansible.builtin.command:
+    argv:
+      - pdnsutil
+      - replace-rrset
+      - "{{ powerdns_zone }}"
+      - '@'
+      - NS
+      - '3600'
+      - "{{ powerdns_primary_nameserver }}."
+      - "{{ powerdns_secondary_nameserver }}."
+  when: inventory_hostname == ansible_play_hosts_all[0]
+  changed_when: false
+
+- name: Enable and start PowerDNS services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop:
+    - pdns
+    - pdns-recursor
+    - dnsdist
+
+- name: Disable SSH password authentication
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/99-key-only.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin prohibit-password
+  notify: Reload SSH
+
+- name: Apply PowerDNS configuration changes
+  ansible.builtin.meta: flush_handlers

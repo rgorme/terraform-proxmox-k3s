@@ -99,6 +99,48 @@ sudo k3s kubectl get nodes -o wide
 sudo k3s kubectl get pods -A
 ```
 
+## PowerDNS Management
+
+Terraform in `terraform/lxc/` creates two Debian 12 PowerDNS containers:
+`powerdns01` (`192.168.1.61`, `prox02`) and `powerdns02`
+(`192.168.1.62`, `prox01`). They share the existing PostgreSQL database at
+`192.168.1.60` and run PowerDNS Authoritative, PowerDNS Recursor, and dnsdist.
+
+dnsdist accepts DNS traffic on port 53. It sends `gormsboel.dk` requests to
+the local Authoritative server and sends other requests from the LAN to the
+local Recursor, which forwards them to the ISP router at `192.168.1.1`.
+Recursive DNS is restricted to `192.168.1.0/24`; Authoritative DNS remains
+available for the configured zone.
+
+Create the empty PostgreSQL database and ensure the `powerdns` user can create
+tables in it. PostgreSQL must permit connections from both PowerDNS container
+addresses. Then add these values to the ignored `ansible/secrets.yml` file:
+
+```yaml
+powerdns_postgresql_password: REPLACE_WITH_POWERDNS_POSTGRESQL_PASSWORD
+powerdns_api_key: REPLACE_WITH_A_RANDOM_32_CHARACTER_OR_LONGER_API_KEY
+```
+
+Deploy the containers and configure PowerDNS:
+
+```sh
+cd terraform/lxc
+terraform apply
+
+cd ../../ansible
+ansible-playbook setup-powerdns.yml
+```
+
+The playbook initializes the schema and creates the `gormsboel.dk` zone with
+`ns1.gormsboel.dk` and `ns2.gormsboel.dk` NS records. Manage host records
+through the PowerDNS API on port `8081` or PowerDNS-Admin. The API is limited
+to `192.168.1.0/24`.
+
+For LAN HA, configure clients to use both `192.168.1.61` and `192.168.1.62` as
+their DNS servers. Public delegation additionally requires public reachability
+for TCP and UDP port 53 to each nameserver and glue records at the registrar.
+Do not expose recursive DNS to the Internet.
+
 ## Deliberate Follow-up Work
 
 - Remove the obsolete USB passthrough from VM `103` in its own reviewed change.
