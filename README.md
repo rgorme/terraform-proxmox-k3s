@@ -141,6 +141,47 @@ their DNS servers. Public delegation additionally requires public reachability
 for TCP and UDP port 53 to each nameserver and glue records at the registrar.
 Do not expose recursive DNS to the Internet.
 
+## Proxmox Login with Authentik
+
+Terraform in `terraform/access/` adds the OpenID Connect realm `authentik` to
+Proxmox, plus two groups that grant access on `/`:
+
+| Authentik group | Proxmox group | Role |
+| --- | --- | --- |
+| `proxmox-admins` | `proxmox-admins-authentik` | `Administrator` |
+| `proxmox-auditors` | `proxmox-auditors-authentik` | `PVEAuditor` |
+
+Users are created on first login as `<username>@authentik`. Their groups are
+replaced from the `groups` claim on every login, so removing a user from the
+Authentik group removes their Proxmox access at the next login. A user in
+neither group can log in but sees nothing. Proxmox ignores group names that
+contain spaces, so keep the Authentik group names exactly as above.
+
+One-time setup in Authentik:
+
+1. Create an OAuth2/OpenID provider with client type *Confidential*, signing key
+   set, scopes `openid profile email`, and these redirect URIs (strict):
+   `https://192.168.1.2:8006` and `https://192.168.1.3:8006`. Add any DNS
+   names you use for the web UI as well; Proxmox redirects back to the address
+   in the browser.
+2. Create an application with slug `proxmox` that uses the provider.
+3. Create the groups `proxmox-admins` and `proxmox-auditors` and add users.
+
+The Terraform token needs `Realm.Allocate`, `Group.Allocate` and
+`Permissions.Modify` on `/` (the `Administrator` role covers all three). Then
+apply:
+
+```sh
+cd terraform/access
+cp terraform.tfvars.example terraform.tfvars   # set client ID and secret
+terraform init
+terraform apply
+```
+
+The client secret is a write-only argument and is never stored in Terraform
+state. To rotate it, change the secret and increase
+`authentik_client_secret_version`. Keep `root@pam` as a break-glass login.
+
 ## Deliberate Follow-up Work
 
 - Remove the obsolete USB passthrough from VM `103` in its own reviewed change.
