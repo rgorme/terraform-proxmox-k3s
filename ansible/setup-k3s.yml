@@ -71,7 +71,8 @@
   hosts: k3s_masters
   serial: 1
   become: true
-  gather_facts: false
+  # memtotal_mb sizes GOMEMLIMIT below.
+  gather_facts: true
   vars_files:
     - secrets.yml
   # vars:
@@ -90,6 +91,26 @@
         src: k3s-server-config.yaml.j2
         dest: /etc/rancher/k3s/config.yaml
         mode: '0600'
+      notify: Restart K3s server
+
+    # The leading server's k3s process grows to most of the VM's memory. With
+    # no swap the kernel then OOM-kills everything around it, the datastore
+    # calls stall, leader election is lost and k3s exits. A soft Go memory
+    # limit makes the runtime collect garbage harder before it gets that far.
+    # A drop-in survives reinstalls; the installer rewrites k3s.service.env.
+    - name: Create K3s server drop-in directory
+      ansible.builtin.file:
+        path: /etc/systemd/system/k3s.service.d
+        state: directory
+        mode: '0755'
+
+    - name: Limit the K3s server Go heap
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/k3s.service.d/gomemlimit.conf
+        mode: '0644'
+        content: |
+          [Service]
+          Environment=GOMEMLIMIT={{ (ansible_facts['memtotal_mb'] * k3s_server_gomemlimit_ratio) | int }}MiB
       notify: Restart K3s server
 
     - name: Read installed K3s version

@@ -3,3 +3,5 @@ k3s_oidc_issuer_url: https://authentik.gormsboel.dk/application/o/k3s/
 k3s_oidc_client_id: kubernetes
 k3s_oidc_username_claim: sub
 k3s_oidc_groups_claim: groups
+# Share of a server's memory that the k3s Go runtime aims to stay under.
+k3s_server_gomemlimit_ratio: 0.6
