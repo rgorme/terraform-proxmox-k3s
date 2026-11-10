@@ -1,0 +1,6 @@
+proxmox_api_url          = "https://192.168.1.2:8006/api2/json"
+proxmox_api_token_id     = "terraform-prov@pve!terraform-token-new"
+proxmox_api_token_secret = "REPLACE_WITH_TOKEN_SECRET"
+
+authentik_client_id     = "REPLACE_WITH_AUTHENTIK_CLIENT_ID"
+authentik_client_secret = "REPLACE_WITH_AUTHENTIK_CLIENT_SECRET"
