@@ -1,2 +1,14 @@
 server: {{ k3s_api_endpoint | to_json }}
 token: {{ k3s_token | to_json }}
+kubelet-arg:
+  # Keep memory back for k3s-agent/containerd and the OS (sshd, journald, ...),
+  # so pods cannot be scheduled into the last ~700 MiB of a 4 GiB worker.
+  - "kube-reserved=memory=256Mi"
+  - "system-reserved=memory=256Mi"
+  # k3s only sets disk thresholds by default, so the kubelet never evicted on
+  # memory and nodes thrashed instead. Setting eviction-hard replaces the whole
+  # map, so the k3s disk defaults are restated here.
+  - "eviction-hard=memory.available<200Mi,nodefs.available<5%,imagefs.available<5%"
+  - "eviction-soft=memory.available<350Mi"
+  - "eviction-soft-grace-period=memory.available=2m"
+  - "eviction-max-pod-grace-period=60"
