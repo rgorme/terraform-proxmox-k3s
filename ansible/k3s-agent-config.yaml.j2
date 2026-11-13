@@ -1,4 +1,9 @@
 server: {{ k3s_api_endpoint | to_json }}
+# Proxmox host as zone, so Longhorn and topology spread keep copies on
+# different physical hosts. k3s only applies node-label at registration; on
+# existing nodes set it with `kubectl label node`.
+node-label:
+  - {{ ('topology.kubernetes.io/zone=' ~ proxmox_node) | to_json }}
 token: {{ k3s_token | to_json }}
 kubelet-arg:
   # Keep memory back for k3s-agent/containerd and the OS (sshd, journald, ...),

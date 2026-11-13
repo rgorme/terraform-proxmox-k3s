@@ -8,6 +8,9 @@ tls-san:
 token: {{ k3s_token | to_json }}
 node-taint:
   - "CriticalAddonsOnly=true:NoExecute"
+# See k3s-agent-config.yaml.j2: only applied at registration.
+node-label:
+  - {{ ('topology.kubernetes.io/zone=' ~ proxmox_node) | to_json }}
 datastore-endpoint: {{ k3s_datastore_endpoint | to_json }}
 kube-apiserver-arg:
   - {{ ('oidc-issuer-url=' ~ k3s_oidc_issuer_url) | to_json }}
