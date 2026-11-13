@@ -99,6 +99,24 @@ sudo k3s kubectl get nodes -o wide
 sudo k3s kubectl get pods -A
 ```
 
+### Longhorn Node Prerequisites
+
+The `longhorn` play prepares the workers for Longhorn. It installs open-iscsi
+and the other required packages, loads `iscsi_tcp` and `dm_crypt`, and turns
+off multipathd, which can claim Longhorn's iSCSI devices.
+
+It also keeps unattended upgrades from restarting iscsid. A Longhorn engine
+older than 1.11.3 caches the iscsid PID when it starts. After iscsid restarts,
+its next detach cannot log out, and the iSCSI session is left behind on the
+node. Keep this until every volume runs an engine from Longhorn 1.11.3 or
+later.
+
+Run only the Longhorn play:
+
+```sh
+ansible-playbook setup-k3s.yml --ask-vault-pass --tags longhorn
+```
+
 ## PostgreSQL HA
 
 Terraform in `terraform/lxc/` also creates the PostgreSQL HA containers:

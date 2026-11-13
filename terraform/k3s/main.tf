@@ -35,8 +35,11 @@ resource "proxmox_virtual_environment_vm" "k3s" {
   name        = each.value.name
   description = "Managed by Terraform."
   node_name   = each.value.node_name
-  pool_id     = proxmox_virtual_environment_pool.k3s_pool.pool_id
-  vm_id       = each.value.vm_id
+  # Changing node_name live-migrates the VM (incl. local disks) instead of
+  # destroying and re-creating it.
+  migrate = true
+  pool_id = proxmox_virtual_environment_pool.k3s_pool.pool_id
+  vm_id   = each.value.vm_id
 
   agent {
     enabled = true
