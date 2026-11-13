@@ -67,6 +67,122 @@
         state: started
         enabled: true
 
+# Longhorn runs only on the workers (the servers are tainted).
+- name: Configure Longhorn node prerequisites
+  hosts: k3s_workers
+  become: true
+  gather_facts: false
+  tags:
+    - longhorn
+  tasks:
+    - name: Install Longhorn packages
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+        name:
+          - open-iscsi
+          - nfs-common
+          - cryptsetup
+          - dmsetup
+        state: present
+
+    - name: Persist Longhorn kernel modules
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/longhorn.conf
+        mode: '0644'
+        content: |
+          iscsi_tcp
+          dm_crypt
+
+    - name: Load Longhorn kernel modules
+      ansible.builtin.modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - iscsi_tcp
+        - dm_crypt
+
+    - name: Start iscsid
+      ansible.builtin.systemd_service:
+        name: iscsid
+        state: started
+        enabled: true
+
+    # Longhorn engines cache the iscsid PID when they start. If iscsid restarts
+    # under them, their next detach cannot log out and leaves the iSCSI session
+    # behind (longhorn/longhorn#13334, fixed in Longhorn 1.11.3). Keep
+    # unattended upgrades from restarting iscsid until every volume runs a fixed
+    # engine.
+    - name: Create needrestart drop-in directory
+      ansible.builtin.file:
+        path: /etc/needrestart/conf.d
+        state: directory
+        mode: '0755'
+
+    - name: Keep needrestart from restarting iscsid
+      ansible.builtin.copy:
+        dest: /etc/needrestart/conf.d/longhorn.conf
+        mode: '0644'
+        content: |
+          # Restarting iscsid breaks detach for running Longhorn engines.
+          $nrconf{override_rc}{qr(^iscsid)} = 0;
+
+    - name: Keep unattended upgrades from upgrading open-iscsi
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/51longhorn-unattended-upgrades
+        mode: '0644'
+        content: |
+          // Upgrading open-iscsi restarts iscsid. Upgrade it with the node drained.
+          Unattended-Upgrade::Package-Blacklist {
+              "open-iscsi";
+          };
+
+    # multipathd can claim Longhorn's iSCSI devices, which breaks mount and
+    # detach. These VMs have no multipath storage, so keep it off.
+    - name: List multipath maps
+      ansible.builtin.command: dmsetup ls --target multipath
+      register: longhorn_multipath_maps
+      changed_when: false
+
+    - name: Stop if multipath already holds a device
+      ansible.builtin.assert:
+        that: longhorn_multipath_maps.stdout is search('No devices found')
+        fail_msg: >-
+          multipath maps exist on {{ inventory_hostname }}:
+          {{ longhorn_multipath_maps.stdout }}. Release them by hand before
+          disabling multipathd.
+
+    - name: Create multipath drop-in directory
+      ansible.builtin.file:
+        path: /etc/multipath/conf.d
+        state: directory
+        mode: '0755'
+
+    - name: Blacklist Longhorn devices in multipath
+      ansible.builtin.copy:
+        dest: /etc/multipath/conf.d/longhorn.conf
+        mode: '0644'
+        content: |
+          blacklist {
+              devnode "^sd[a-z0-9]+"
+          }
+
+    - name: Forget Longhorn WWIDs recorded by multipath
+      ansible.builtin.lineinfile:
+        path: /etc/multipath/wwids
+        regexp: '^/360000000000000000e0000000'
+        state: absent
+
+    - name: Disable multipathd
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+        masked: true
+      loop:
+        - multipathd.socket
+        - multipathd.service
+
 - name: Configure K3s servers
   hosts: k3s_masters
   serial: 1
