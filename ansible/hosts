@@ -12,5 +12,19 @@ k3s-worker-3 ansible_host=192.168.1.35 proxmox_node=prox03
 powerdns01 ansible_host=192.168.1.61 ansible_user=root
 powerdns02 ansible_host=192.168.1.62 ansible_user=root
 
+[postgresql]
+pg01 ansible_host=192.168.1.57 ansible_user=root proxmox_node=prox02
+pg02 ansible_host=192.168.1.58 ansible_user=root proxmox_node=prox03
+
+[etcd_witness]
+pg-witness ansible_host=192.168.1.59 ansible_user=root proxmox_node=prox01
+
+[etcd:children]
+postgresql
+etcd_witness
+
+[postgresql_ha:children]
+etcd
+
 [all:vars]
 ansible_user=k3s

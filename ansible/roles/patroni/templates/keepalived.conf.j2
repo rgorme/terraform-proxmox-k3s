@@ -1,0 +1,36 @@
+# Managed by Ansible
+global_defs {
+  enable_script_security
+  script_user nobody
+}
+
+# Patroni's /primary endpoint returns 200 only on the leader. With weight 0 a
+# failing check puts the instance in FAULT, so only the leader holds the VIP.
+vrrp_script chk_patroni_primary {
+  script "/usr/bin/curl -sf -o /dev/null http://127.0.0.1:{{ patroni_restapi_port }}/primary"
+  interval 2
+  timeout 2
+  fall 2
+  rise 1
+  weight 0
+}
+
+vrrp_instance PG_VIP {
+  state BACKUP
+  interface eth0
+  virtual_router_id {{ postgresql_ha_vrrp_router_id }}
+  priority 100
+  advert_int 1
+  unicast_src_ip {{ ansible_host }}
+  unicast_peer {
+{% for h in groups['postgresql'] if h != inventory_hostname %}
+    {{ hostvars[h].ansible_host }}
+{% endfor %}
+  }
+  virtual_ipaddress {
+    {{ postgresql_ha_vip }}/{{ postgresql_ha_vip_prefix }} dev eth0
+  }
+  track_script {
+    chk_patroni_primary
+  }
+}

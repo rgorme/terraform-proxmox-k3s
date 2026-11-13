@@ -1,0 +1,17 @@
+patroni_restapi_port: 8008
+patroni_restapi_user: patroni
+patroni_replication_user: replicator
+patroni_data_dir: "/var/lib/postgresql/{{ postgresql_ha_version }}/patroni"
+patroni_bin_dir: "/usr/lib/postgresql/{{ postgresql_ha_version }}/bin"
+
+patroni_postgresql_parameters:
+  max_connections: 200
+  shared_buffers: 512MB
+  effective_cache_size: 1536MB
+  wal_level: replica
+  hot_standby: "on"
+  max_wal_senders: 10
+  max_replication_slots: 10
+  wal_keep_size: 1GB
+  wal_log_hints: "on"
+  password_encryption: scram-sha-256
