@@ -143,10 +143,17 @@
       ansible.builtin.command: dmsetup ls --target multipath
       register: longhorn_multipath_maps
       changed_when: false
+      # Read-only; also run it under --check so the assert below has data.
+      check_mode: false
 
+    # With no maps, dmsetup prints nothing on stdout (some versions print
+    # "No devices found"). Any other line is a map.
     - name: Stop if multipath already holds a device
       ansible.builtin.assert:
-        that: longhorn_multipath_maps.stdout is search('No devices found')
+        that: >-
+          longhorn_multipath_maps.stdout_lines
+          | reject('search', 'No devices found')
+          | list | length == 0
         fail_msg: >-
           multipath maps exist on {{ inventory_hostname }}:
           {{ longhorn_multipath_maps.stdout }}. Release them by hand before
