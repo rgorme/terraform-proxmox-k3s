@@ -1,0 +1,122 @@
+---
+- name: Validate required PostgreSQL HA secrets
+  ansible.builtin.assert:
+    that:
+      - postgresql_ha_superuser_password | default('') | length >= 16
+      - postgresql_ha_replication_password | default('') | length >= 16
+      - postgresql_ha_restapi_password | default('') | length >= 16
+    fail_msg: >-
+      Set postgresql_ha_superuser_password, postgresql_ha_replication_password
+      and postgresql_ha_restapi_password (16+ characters) in ansible/secrets.yml.
+  no_log: true
+
+- name: Install repository prerequisites
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    name:
+      - ca-certificates
+      - curl
+      - python3-debian
+    state: present
+
+- name: Add the PostgreSQL (PGDG) apt repository
+  ansible.builtin.deb822_repository:
+    name: pgdg
+    types: deb
+    uris: https://apt.postgresql.org/pub/repos/apt
+    suites: "{{ ansible_distribution_release }}-pgdg"
+    components: main
+    signed_by: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+    state: present
+
+- name: Create the postgresql-common configuration directory
+  ansible.builtin.file:
+    path: /etc/postgresql-common
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Stop the package from creating a default cluster
+  ansible.builtin.template:
+    src: createcluster.conf.j2
+    dest: /etc/postgresql-common/createcluster.conf
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Install PostgreSQL, Patroni and keepalived
+  ansible.builtin.apt:
+    update_cache: true
+    name:
+      - "postgresql-{{ postgresql_ha_version }}"
+      - patroni
+      - python3-etcd
+      - python3-psycopg2
+      - keepalived
+    state: present
+
+# Patroni starts PostgreSQL itself; the Debian wrapper unit must stay out of it.
+- name: Disable the Debian PostgreSQL wrapper service
+  ansible.builtin.systemd_service:
+    name: postgresql
+    state: stopped
+    enabled: false
+
+- name: Create the PostgreSQL version directory
+  ansible.builtin.file:
+    path: "/var/lib/postgresql/{{ postgresql_ha_version }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: '0755'
+
+- name: Create the Patroni configuration directory
+  ansible.builtin.file:
+    path: /etc/patroni
+    state: directory
+    owner: root
+    group: postgres
+    mode: '0750'
+
+- name: Configure Patroni
+  ansible.builtin.template:
+    src: config.yml.j2
+    dest: /etc/patroni/config.yml
+    owner: postgres
+    group: postgres
+    mode: '0600'
+  notify: Reload Patroni
+
+- name: Start Patroni
+  ansible.builtin.systemd_service:
+    name: patroni
+    state: started
+    enabled: true
+
+- name: Wait for PostgreSQL to run under Patroni
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ patroni_restapi_port }}/health"
+    status_code: 200
+  register: patroni_health
+  retries: 60
+  delay: 5
+  until: patroni_health.status == 200
+
+- name: Configure keepalived for the PostgreSQL VIP
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart keepalived
+  tags: [keepalived]
+
+- name: Set the keepalived service state
+  ansible.builtin.systemd_service:
+    name: keepalived
+    state: "{{ 'started' if postgresql_ha_vip_enabled | bool else 'stopped' }}"
+    enabled: "{{ postgresql_ha_vip_enabled | bool }}"
+  tags: [keepalived]

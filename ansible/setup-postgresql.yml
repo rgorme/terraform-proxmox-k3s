@@ -1,0 +1,20 @@
+---
+# etcd must form its cluster on all three members at once, so no serial here.
+- name: Configure the etcd cluster for Patroni
+  hosts: etcd
+  become: true
+  gather_facts: true
+  roles:
+    - etcd
+
+# One host at a time: the first bootstraps the cluster as leader and the second
+# clones from it. On later runs this also keeps one PostgreSQL host untouched.
+- name: Configure PostgreSQL with Patroni
+  hosts: postgresql
+  become: true
+  gather_facts: true
+  serial: 1
+  vars_files:
+    - secrets.yml
+  roles:
+    - patroni
