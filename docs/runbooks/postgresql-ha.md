@@ -43,15 +43,15 @@ Afklaret ved oprettelsen (13. nov. 2026):
 - [x] `cd terraform/lxc && terraform plan`. Planen må kun **oprette** de tre
       `proxmox_virtual_environment_container.postgresql_ha[...]`, ingen ændringer i powerdns01/02
 - [x] `terraform apply` (alle tre oprettet 14. nov.; efterfølgende plan: `No changes`)
-- [ ] SSH virker til `root@192.168.1.57`, `.58` og `.59`. Tjek host keys mod `pct exec <vmid> -- ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`
+- [x] SSH virker til `root@192.168.1.57`, `.58` og `.59`. Tjek host keys mod `pct exec <vmid> -- ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`
 
 ## 2. Byg clusteret (VIP slået fra)
 
 `postgresql_ha_vip_enabled` står på `false`, så keepalived ikke tager `.60` fra LXC 200.
 
-- [ ] `cd ansible && ansible-playbook setup-postgresql.yml --ask-vault-pass`
-- [ ] På pg01: `etcdctl --endpoints=http://127.0.0.1:2379 member list` viser tre medlemmer
-- [ ] På pg01: `patronictl -c /etc/patroni/config.yml list` viser én `Leader` og én
+- [x] `cd ansible && ansible-playbook setup-postgresql.yml --ask-vault-pass`
+- [x] På pg01: `etcdctl --endpoints=http://127.0.0.1:2379 member list` viser tre medlemmer
+- [x] På pg01: `patronictl -c /etc/patroni/config.yml list` viser én `Leader` og én
       `Sync Standby` med `streaming`, lag 0
 
 ## 3. Flyt data (kort nedetid)
