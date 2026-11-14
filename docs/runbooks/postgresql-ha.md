@@ -56,36 +56,41 @@ Afklaret ved oprettelsen (13. nov. 2026):
 
 ## 3. Flyt data (kort nedetid)
 
-Nedetid: Authentik-login, RADIUS-login på HP 2915 og PowerDNS Authoritative
-(`gormsboel.dk`). Rekursiv DNS kører videre. Hold vinduet kort.
+Udført 14.–15. nov. 2026. Nedetid 23:39–00:00 (ca. 21 min) for Authentik-login,
+RADIUS-login på HP 2915 og PowerDNS Authoritative (`gormsboel.dk`).
 
-- [ ] Stop skrivende klienter:
-  - `kubectl -n authentik scale deploy authentik-server authentik-worker --replicas=0`
-  - `kubectl -n powerdns-admin scale deploy powerdns-admin --replicas=0`
-  - På powerdns01 og powerdns02: `systemctl stop pdns`
-  - ArgoCD self-heal skalerer op igen: merge rgorme/gitops#98 (pauser auto-sync for
-    `authentik` og `powerdns-admin`) og tjek, at begge Applications viser auto-sync slået fra
-- [ ] På prox02: dump alt, men udelad `postgres`-rollen (Patroni ejer dens password):
-      `pct exec 200 -- su - postgres -c pg_dumpall | grep -vE '^(CREATE|ALTER) ROLE postgres( |;)' > /root/pg200.sql`
-- [ ] Kopiér til lederen (pg01, hvis `patronictl list` stadig siger det):
-      `scp /root/pg200.sql root@192.168.1.57:/tmp/`
-- [ ] På lederen: `su - postgres -c 'psql -v ON_ERROR_STOP=0 -f /tmp/pg200.sql' 2>&1 | grep -i error`.
-      Kun "already exists" for `template1`/`postgres` er OK
-- [ ] Sammenlign: `\l` og rækkeantal i et par tabeller pr. database på LXC 200 og pg01
-- [ ] Stop LXC 200 og slå autostart fra (den beholdes som fallback):
-      `pct stop 200 && pct set 200 --onboot 0`
+- [x] Tjek klienter på LXC 200 (`pg_stat_activity`): kun Authentik, PowerDNS og PowerDNS-Admin.
+      `netbox` og `planka` findes som databaser, men intet bruger dem. De følger med i dumpet
+- [x] Merge rgorme/gitops#98 (pauser auto-sync for `authentik` og `powerdns-admin`)
+- [x] Stop skrivende klienter: scale `authentik-server`, `authentik-worker` og `powerdns-admin`
+      til 0 (alle stod på 2), og `systemctl stop pdns` på powerdns01/02
+- [x] På prox02: `pct exec 200 -- su - postgres -c pg_dumpall > /root/pg200-full.sql`, og
+      `grep -vE '^(CREATE|ALTER) ROLE postgres( |;)'` til `/root/pg200.sql` (Patroni ejer `postgres`)
+- [x] Kopiér til lederen som `/var/lib/postgresql/pg200.sql`. Ikke `/tmp`: `protected_regular`
+      forhindrer root i at skrive en postgres-ejet fil der
+- [x] `authentik`, `netbox` og `planka` bruger locale `da_DK.UTF-8`. Generér den på begge noder
+      (nu i Patroni-rollen) og kør `patronictl restart`, ellers fejler `CREATE DATABASE`
+- [x] Restore på lederen: `su postgres -c 'psql -X -v ON_ERROR_STOP=0 -f pg200.sql'`.
+      Kun "role ... already exists" er OK
+- [x] Sammenlign præcist rækkeantal i alle tabeller, roller og extensions: identisk
+      (488 tabeller, 402.765 rækker)
+- [x] `pct shutdown 200 && pct set 200 --onboot 0` (beholdes som fallback)
 
 ## 4. Slå VIP'en til
 
-- [ ] Sæt `postgresql_ha_vip_enabled: true` i `ansible/group_vars/postgresql_ha.yml`
-- [ ] `ansible-playbook setup-postgresql.yml --ask-vault-pass --tags keepalived`
-- [ ] `ip -br addr show eth0` på lederen viser `192.168.1.60`, på standby'en ikke
-- [ ] Fra en anden maskine: `psql -h 192.168.1.60 -U powerdns -d powerdns -c 'select pg_is_in_recovery()'` giver `f`
+- [x] Sæt `postgresql_ha_vip_enabled: true` i `ansible/group_vars/postgresql_ha.yml`
+- [x] `ansible-playbook setup-postgresql.yml --ask-vault-pass --tags keepalived`
+- [x] `.60` ligger kun på lederen (pg01), og ARP for `.60` peger på pg01's MAC
 
 ## 5. Start klienterne igen
 
-- [ ] På powerdns01 og powerdns02: `systemctl start pdns`, og `dig @192.168.1.61 gormsboel.dk SOA`
-- [ ] Revert rgorme/gitops#98, så ArgoCD genaktiverer auto-sync og skalerer op igen
+kubectl logger ind via Authentik-OIDC og virker ikke, mens Authentik er nede. Brug
+break-glass: `ssh k3s@192.168.1.17 sudo k3s kubectl ...`.
+
+- [x] `systemctl start pdns` på powerdns01/02, og `dig gormsboel.dk SOA` svarer fra begge
+- [x] Scale `authentik-server`, `authentik-worker` og `powerdns-admin` til 2 (via break-glass)
+- [x] `pg_stat_activity` på pg01 viser alle tre klienter. Authentik `/-/health/ready/` giver 200
+- [ ] Revert rgorme/gitops#98, så ArgoCD genaktiverer auto-sync
 - [ ] Log ind i Authentik, og log ind på HP 2915 via RADIUS (`ssh hp2915`)
 - [ ] PowerDNS-Admin viser zonen
 
