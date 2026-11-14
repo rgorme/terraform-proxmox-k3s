@@ -84,6 +84,36 @@
     state: stopped
     enabled: false
 
+# systemd-tmpfiles-setup fails at boot in these containers ("Failed to set up
+# credentials"), so /run/postgresql is missing after a restart and Patroni
+# exits. Let systemd create it for the Patroni unit instead.
+- name: Create the Patroni systemd drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/patroni.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Give Patroni its own /run/postgresql
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/patroni.service.d/override.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by Ansible
+      [Service]
+      RuntimeDirectory=postgresql
+      RuntimeDirectoryMode=2775
+      RuntimeDirectoryPreserve=yes
+  register: patroni_dropin
+
+- name: Reload systemd after the Patroni drop-in changes
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: patroni_dropin is changed
+
 - name: Create the PostgreSQL version directory
   ansible.builtin.file:
     path: "/var/lib/postgresql/{{ postgresql_ha_version }}"

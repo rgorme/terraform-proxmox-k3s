@@ -96,12 +96,22 @@ break-glass: `ssh k3s@192.168.1.17 sudo k3s kubectl ...`.
 
 ## 6. Test failover
 
-- [ ] Planlagt: `patronictl -c /etc/patroni/config.yml switchover --candidate pg02 --force`.
-      VIP'en flytter til pg02 inden for få sekunder. Authentik virker stadig
-- [ ] Uplanlagt: `pct stop 204` på prox03 (mens pg02 er leder). pg01 bliver leder efter
-      ca. `ttl` (30 s), og VIP'en flytter. `pct start 204`, og pg02 kommer tilbage som
-      `Sync Standby` (via `pg_rewind`)
-- [ ] Skift tilbage: `switchover --candidate pg01 --force`
+Udført 15. nov. 2026 med en markør-tabel og en monitor, der hvert sekund tjekkede
+`.60:5432` og Authentiks `/-/health/ready/`.
+
+- [x] Login i Authentik, RADIUS på HP 2915 og PowerDNS-Admin virker (testet af ejeren)
+- [x] Planlagt: `patronictl switchover pg-homelab --leader pg01 --candidate pg02 --force`.
+      `.60` var væk i ca. 1 s, og Authentik var ikke klar i ca. 5 s
+- [x] Uplanlagt: hård stop af pg02 som leder (`pvesh create /nodes/prox03/lxc/204/status/stop`).
+      `.60` var væk i ca. 33 s (Patroni `ttl` 30), og Authentik var ikke klar i ca. 65 s,
+      fordi den genopretter sine forbindelser. pg01 blev leder på timeline 3
+- [x] Ingen datatab: alle markør-rækker fandtes efter begge tests
+- [x] Start pg02: den kom tilbage via `pg_rewind` som `Sync Standby`, lag 0
+
+Fundet under testen: efter genstart startede Patroni ikke, fordi `/run/postgresql`
+manglede. `systemd-tmpfiles-setup` fejler ved boot i containerne ("Failed to set up
+credentials", samme årsag som PowerDNS-overrides). Patroni-rollen har nu et drop-in
+med `RuntimeDirectory=postgresql`, som er lagt ind på begge noder.
 
 ## 7. Efterarbejde
 
