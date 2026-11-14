@@ -1,0 +1,11 @@
+# Managed by Ansible
+[Unit]
+Description=pgBackRest {{ item.type }} backup of {{ pgbackrest_stanza }}
+
+[Timer]
+OnCalendar={{ item.schedule }}
+Persistent=true
+Unit=pgbackrest-backup@{{ item.type }}.service
+
+[Install]
+WantedBy=timers.target

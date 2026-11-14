@@ -150,7 +150,8 @@ locals {
       address   = "192.168.1.59/24"
       cores     = 1
       memory    = 512
-      disk_size = 4
+      # Holds the pgBackRest repository (backups + WAL for ~4 weeks).
+      disk_size = 32
     }
   }
 }

@@ -116,9 +116,154 @@ med `RuntimeDirectory=postgresql`, som er lagt ind på begge noder.
 ## 7. Efterarbejde
 
 - [ ] Efter en uges drift: slet LXC 200 (`pct destroy 200`). vzdump-backuppen fra trin 0 bliver liggende
-- [ ] Backup: HA er ikke backup. Opsæt fx pgBackRest eller et natligt `pg_dumpall` fra lederen
+- [ ] Backup: HA er ikke backup. pgBackRest er sat op i Ansible, se trin 8
 - [ ] Grafana/alarmer: alarm på `patroni_primary` = 0 i hele clusteret og på replikerings-lag
 - [ ] Opdatér idétavlen
+
+## 8. Backup med pgBackRest
+
+Point-in-time recovery (PITR) for hele clusteret, uafhængigt af hvem der er leder.
+
+| Del             | Hvor        | Hvad                                                                  |
+|-----------------|-------------|-----------------------------------------------------------------------|
+| Repository      | pg-witness  | `/var/lib/pgbackrest`, ejet af brugeren `pgbackrest`                  |
+| WAL-arkivering  | pg01, pg02  | `archive_command` skubber WAL til pg-witness over SSH (async, spool i `/var/spool/pgbackrest`) |
+| Backups         | pg-witness  | systemd-timere: full søndag 01:30, diff man–lør 01:30                 |
+| Retention       | –           | 4 full-backups (ca. 4 ugers PITR). WAL ældre end ældste full slettes  |
+
+- Backuppen kører på pg-witness, og pgBackRest finder selv primary'en blandt
+  `pg1-host` (pg01) og `pg2-host` (pg02). Efter en failover rammer næste backup den nye leder.
+  Er der ingen primary, fejler kørslen, og `pgbackrest-backup@full.service` står som failed.
+- Begge noder har samme `archive_command` (i Patroni-DCS), men kun lederen arkiverer
+  (`archive_mode=on`, ikke `always`). Tidslinjeskift ved failover håndteres af pgBackRest.
+- SSH: `postgres` på pg01/pg02 → `pgbackrest@.59` (arkivering, restore) og
+  `pgbackrest` på pg-witness → `postgres@.57/.58` (backup). Nøglerne er genereret af
+  rollen og begrænset med `from=`.
+- Er pg-witness nede, hober WAL sig op i `pg_wal` på lederen. Over 4 GiB
+  (`archive-push-queue-max`) smider pgBackRest WAL'en væk for at redde lederens disk.
+  Så er PITR brudt indtil næste full-backup.
+- pg-witness bærer nu både etcd-stemmen og backupperne. prox01 er stadig en anden host
+  end pg01/pg02, men der er ingen offsite-kopi.
+
+### 8.1 Opsætning
+
+- [ ] Udvid pg-witness' disk fra 4 til 32 GB: `cd terraform/lxc && terraform plan`. Planen må kun
+      vise `~ size = 4 -> 32` på `postgresql_ha["pg-witness"]` som *update in-place*. Står der
+      *must be replaced*, så stop. Derefter `terraform apply`, og tjek `df -h /` på pg-witness
+- [ ] `cd ansible && ansible-playbook setup-postgresql.yml --ask-vault-pass --tags pgbackrest`.
+      Rollen installerer pgBackRest fra PGDG på alle tre, udveksler SSH-nøgler, kører
+      `stanza-create` på pg-witness, slår timerne til og PATCHer Patronis dynamiske config
+      med `archive_mode: on` og `archive_command` (samme som `patronictl edit-config`;
+      `bootstrap.dcs` gælder kun ved første bootstrap)
+- [ ] `patronictl -c /etc/patroni/config.yml show-config` viser `archive_mode` og `archive_command`
+- [ ] `patronictl -c /etc/patroni/config.yml list` viser `Pending restart` på begge noder.
+      `archive_mode` kræver genstart: `patronictl -c /etc/patroni/config.yml restart pg-homelab --pending`.
+      Genstart af lederen giver et par sekunders afbrydelse (Authentik genforbinder)
+- [ ] På lederen: `su postgres -c "psql -Atc 'show archive_mode'"` giver `on`
+- [ ] På pg-witness: `runuser -u pgbackrest -- pgbackrest --stanza=pg-homelab check`
+      (tvinger et WAL-skift og venter på, at det er arkiveret)
+- [ ] Første full-backup med det samme: `systemctl start pgbackrest-backup@full.service`,
+      derefter `journalctl -u pgbackrest-backup@full.service` uden fejl
+- [ ] `systemctl list-timers 'pgbackrest-*'` viser begge timere med næste kørsel
+
+Køres playbooken igen, sker der intet, når DCS-værdierne allerede er sat. Er clusteret
+blevet genskabt (fx efter `patronictl remove`, se 8.4), sætter playbooken dem igen.
+
+### 8.2 Tjek at backuppen virker
+
+Alt på pg-witness som `pgbackrest` (`runuser -u pgbackrest -- ...`):
+
+- `pgbackrest --stanza=pg-homelab info`: status `ok`, seneste backup fra i nat, og
+  `wal archive min/max` hvor max er få minutter gammel
+- `pgbackrest --stanza=pg-homelab check`: arkiveringen virker lige nu
+- `pgbackrest --stanza=pg-homelab verify`: læser hele repoet og tjekker checksummer
+  (backups og WAL). Tager lidt tid, men kører fint midt på dagen
+- `systemctl --failed` er tom, og `journalctl -u 'pgbackrest-backup@*' --since -2d` viser
+  de seneste kørsler
+- `df -h /` på pg-witness: repoet skal kunne rumme 4 uger
+- På lederen: `su postgres -c "psql -Atc 'select archived_count, failed_count, last_failed_time from pg_stat_archiver'"`.
+  `failed_count` må gerne være > 0 fra fortiden, men `last_failed_time` skal være gammel
+
+### 8.3 Restore-test (PITR til en sidevogn)
+
+Restorer til en midlertidig mappe på **standby'en** og starter en ekstra PostgreSQL på
+port 5433. Patroni, clusteret og VIP'en røres ikke. Kør den efter opsætningen og derefter
+fx hvert kvartal.
+
+1. På lederen: lav en markør og notér tiden:
+   ```sh
+   su postgres -c "psql -Atc \"create table public.restore_marker(t timestamptz default now()); insert into public.restore_marker default values; select now();\""
+   ```
+   Vent et par sekunder, notér tiden igen (`T`), og slet så markøren (det er "uheldet"):
+   ```sh
+   su postgres -c "psql -Atc 'select now()'"     # = T, fx 2026-11-16 12:34:56.789+01
+   su postgres -c "psql -Atc 'drop table public.restore_marker; select pg_switch_wal()'"
+   ```
+2. På pg-witness: `runuser -u pgbackrest -- pgbackrest --stanza=pg-homelab check` (WAL'en er arkiveret)
+3. På standby'en (`patronictl list` viser hvem):
+   ```sh
+   install -d -o postgres -g postgres -m 0700 /var/lib/postgresql/restore-test
+   su postgres -c "pgbackrest --stanza=pg-homelab --pg1-path=/var/lib/postgresql/restore-test \
+     --type=time --target='T' --target-action=promote restore"
+   ```
+4. Start den som en løs instans. `archive_mode=off` er vigtigt: ellers skubber test-instansen
+   sin nye tidslinje ind i det rigtige repo. `synchronous_standby_names` nulstilles, så
+   skrivninger ikke hænger:
+   ```sh
+   su postgres -c "/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/restore-test \
+     -l /var/lib/postgresql/restore-test.log -w -t 600 start \
+     -o \"-c port=5433 -c listen_addresses=127.0.0.1 -c archive_mode=off \
+         -c synchronous_standby_names='' -c shared_buffers=128MB -c cluster_name=restore-test\""
+   ```
+5. Tjek:
+   - `su postgres -c "psql -p 5433 -Atc 'select * from public.restore_marker'"` giver
+     markør-rækken (den er slettet i det rigtige cluster)
+   - `su postgres -c "psql -p 5433 -Atc 'select pg_is_in_recovery()'"` giver `f`
+   - `psql -p 5433 -l` viser `authentik`, `powerdns`, `powerdnsadmin`, `netbox`, `planka`,
+     og fx `select count(*) from authentik_core_user` i `authentik` svarer til lederen
+   - `grep -E 'recovery stopping|selected new timeline' /var/lib/postgresql/restore-test.log`
+6. Ryd op:
+   ```sh
+   su postgres -c "/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/restore-test -m fast stop"
+   rm -rf /var/lib/postgresql/restore-test /var/lib/postgresql/restore-test.log
+   ```
+   Notér dato og resultat her.
+
+Log over restore-tests:
+
+- [ ] _(første test efter opsætningen)_
+
+### 8.4 Restore af hele clusteret (katastrofe)
+
+Når data i clusteret er ødelagt (fx en slettet tabel) eller begge noder er tabt. Alle
+klienter er nede undervejs. Stop dem som i trin 3, og brug break-glass til kubectl.
+
+1. Stop Patroni på begge noder: `systemctl stop patroni` (pg02 først, så lederen til sidst).
+   keepalived slipper `.60`, når `/primary` svarer nej
+2. På pg01: restore oven i data-mappen. `--delta` genbruger uændrede filer:
+   ```sh
+   su postgres -c "pgbackrest --stanza=pg-homelab --delta \
+     --type=time --target='<tidspunkt>' --target-action=promote restore"
+   ```
+   Uden `--type`/`--target` restorer den til seneste arkiverede WAL
+3. Start PostgreSQL løst, så recovery bliver færdig og den promoverer:
+   ```sh
+   su postgres -c "/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/17/patroni -w -t 600 start \
+     -o '-c archive_mode=off -c synchronous_standby_names=\"\"'"
+   ```
+   Tjek data med `psql`, og stop den igen: `pg_ctl -D ... -m fast stop`
+4. Nulstil Patronis cluster-tilstand i etcd (også den dynamiske config):
+   `patronictl -c /etc/patroni/config.yml remove pg-homelab` (spørger om navnet og bekræftelse)
+5. `systemctl start patroni` på pg01. Den overtager den eksisterende data-mappe som leder
+   og skriver `bootstrap.dcs` som ny dynamisk config
+6. På pg02: `rm -rf /var/lib/postgresql/17/patroni` og `systemctl start patroni`. Den kloner
+   fra pg01 og bliver `Sync Standby`
+7. `ansible-playbook setup-postgresql.yml --ask-vault-pass --tags pgbackrest` (sætter
+   arkiveringen i DCS igen), og `patronictl restart pg-homelab --pending`
+8. På pg-witness: `pgbackrest --stanza=pg-homelab check`, og tag straks en ny full-backup
+   (`systemctl start pgbackrest-backup@full.service`). Den gamle tidslinje er stadig i
+   repoet, til den udløber
+9. Start klienterne som i trin 5
 
 ## Rollback (før trin 6)
 
