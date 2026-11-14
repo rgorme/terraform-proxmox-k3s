@@ -1,0 +1,10 @@
+postgresql_ha_cluster_name: pg-homelab
+postgresql_ha_version: 17
+postgresql_ha_lan_network: 192.168.1.0/24
+
+# Floating address that clients connect to. It used to be LXC 200's own IP.
+# LXC 200 (the old owner) was stopped on 2026-11-14 and must stay off.
+postgresql_ha_vip: 192.168.1.60
+postgresql_ha_vip_prefix: 24
+postgresql_ha_vip_enabled: true
+postgresql_ha_vrrp_router_id: 60

@@ -3,7 +3,7 @@
 # installer does not need to persist operational flags in a systemd unit.
 
 - name: Configure K3s prerequisites
-  hosts: all
+  hosts: k3s_masters:k3s_workers
   become: true
   gather_facts: true
   tags:

@@ -1,0 +1,11 @@
+---
+- name: Reload Patroni
+  ansible.builtin.systemd_service:
+    name: patroni
+    state: reloaded
+
+- name: Restart keepalived
+  ansible.builtin.systemd_service:
+    name: keepalived
+    state: restarted
+  when: postgresql_ha_vip_enabled | bool

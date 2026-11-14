@@ -1,0 +1,77 @@
+# Managed by Ansible
+scope: {{ postgresql_ha_cluster_name }}
+name: {{ inventory_hostname }}
+
+restapi:
+  listen: 0.0.0.0:{{ patroni_restapi_port }}
+  connect_address: {{ ansible_host }}:{{ patroni_restapi_port }}
+  authentication:
+    username: {{ patroni_restapi_user }}
+    password: {{ postgresql_ha_restapi_password | to_json }}
+
+ctl:
+  authentication:
+    username: {{ patroni_restapi_user }}
+    password: {{ postgresql_ha_restapi_password | to_json }}
+
+etcd3:
+  hosts:
+{% for h in groups['etcd'] %}
+    - {{ hostvars[h].ansible_host }}:2379
+{% endfor %}
+
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_failover: 1048576
+    # Commits wait for the standby while it is up; Patroni drops to async when
+    # it is down (not strict), so one host can still serve writes alone.
+    synchronous_mode: true
+    synchronous_mode_strict: false
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+{% for key, value in patroni_postgresql_parameters.items() %}
+        {{ key }}: {{ value | to_json }}
+{% endfor %}
+  initdb:
+    - encoding: UTF8
+    - locale: C.UTF-8
+    - data-checksums
+
+postgresql:
+  listen: 0.0.0.0:5432
+  connect_address: {{ ansible_host }}:5432
+  data_dir: {{ patroni_data_dir }}
+  bin_dir: {{ patroni_bin_dir }}
+  pgpass: /var/lib/postgresql/.pgpass_patroni
+  authentication:
+    superuser:
+      username: postgres
+      password: {{ postgresql_ha_superuser_password | to_json }}
+    replication:
+      username: {{ patroni_replication_user }}
+      password: {{ postgresql_ha_replication_password | to_json }}
+  parameters:
+    unix_socket_directories: /var/run/postgresql
+  pg_hba:
+    - local all postgres peer
+    - local all all scram-sha-256
+    - host all all 127.0.0.1/32 scram-sha-256
+{% for h in groups['postgresql'] %}
+    - host replication {{ patroni_replication_user }} {{ hostvars[h].ansible_host }}/32 scram-sha-256
+{% endfor %}
+    - host all all {{ postgresql_ha_lan_network }} scram-sha-256
+
+# LXC containers have no /dev/watchdog.
+watchdog:
+  mode: "off"
+
+tags:
+  nofailover: false
+  noloadbalance: false
+  clonefrom: false
+  nosync: false

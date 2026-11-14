@@ -1,0 +1,67 @@
+---
+- name: Install etcd
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    name:
+      - etcd-server
+      - etcd-client
+    state: present
+
+- name: Check whether this member has joined the cluster
+  ansible.builtin.stat:
+    path: /var/lib/etcd/.cluster-bootstrapped
+  register: etcd_bootstrapped
+
+# The Debian package starts a single-node etcd on install. Its data directory
+# would make this member ignore ETCD_INITIAL_CLUSTER, so remove it once.
+- name: Stop the single-node etcd started by the package
+  ansible.builtin.systemd_service:
+    name: etcd
+    state: stopped
+  when: not etcd_bootstrapped.stat.exists
+
+- name: Remove the single-node etcd data
+  ansible.builtin.file:
+    path: "{{ etcd_data_dir }}"
+    state: absent
+  when: not etcd_bootstrapped.stat.exists
+
+- name: Configure etcd
+  ansible.builtin.template:
+    src: etcd.default.j2
+    dest: /etc/default/etcd
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart etcd
+
+# no_block: etcd only reports ready once a quorum of members is up, and the
+# members are started in parallel across hosts.
+- name: Start etcd
+  ansible.builtin.systemd_service:
+    name: etcd
+    state: started
+    enabled: true
+    no_block: true
+
+- name: Wait for the etcd cluster to become healthy
+  ansible.builtin.command:
+    cmd: etcdctl --endpoints=http://127.0.0.1:{{ etcd_client_port }} endpoint health
+  environment:
+    ETCDCTL_API: "3"
+  register: etcd_health
+  retries: 30
+  delay: 5
+  until: etcd_health.rc == 0
+  changed_when: false
+
+- name: Mark this member as bootstrapped
+  ansible.builtin.file:
+    path: /var/lib/etcd/.cluster-bootstrapped
+    state: touch
+    owner: root
+    group: root
+    mode: '0644'
+    modification_time: preserve
+    access_time: preserve

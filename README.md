@@ -117,6 +117,22 @@ Run only the Longhorn play:
 ansible-playbook setup-k3s.yml --ask-vault-pass --tags longhorn
 ```
 
+## PostgreSQL HA
+
+Terraform in `terraform/lxc/` also creates the PostgreSQL HA containers:
+`pg01` (`192.168.1.57`, `prox02`), `pg02` (`192.168.1.58`, `prox03`) and the
+etcd-only `pg-witness` (`192.168.1.59`, `prox01`). Patroni runs PostgreSQL on
+`pg01`/`pg02` with etcd on all three, and keepalived holds the client VIP
+`192.168.1.60` on the current leader.
+
+```sh
+cd ansible
+ansible-playbook setup-postgresql.yml --ask-vault-pass
+```
+
+Migration from the old single container (LXC 200) and failover tests are in
+`docs/runbooks/postgresql-ha.md`.
+
 ## PowerDNS Management
 
 Terraform in `terraform/lxc/` creates two Debian 12 PowerDNS containers:
