@@ -31,7 +31,7 @@ Afklaret ved oprettelsen (13. nov. 2026):
 - LXC 200 kører PostgreSQL 15.14. Dump/restore i trin 3 er samtidig opgraderingen til 17
 - Ingen extensions ud over `plpgsql`
 
-- [ ] Backup af LXC 200: `vzdump 200 --mode snapshot --storage <backup-storage>`
+- [x] Backup af LXC 200: `vzdump 200 --mode snapshot --storage <backup-storage>`
 - [x] Tilføj til `ansible/secrets.yml` (`ansible-vault edit secrets.yml`):
       `postgresql_ha_superuser_password`, `postgresql_ha_replication_password`,
       `postgresql_ha_restapi_password` (mindst 16 tegn hver)
@@ -63,7 +63,8 @@ Nedetid: Authentik-login, RADIUS-login på HP 2915 og PowerDNS Authoritative
   - `kubectl -n authentik scale deploy authentik-server authentik-worker --replicas=0`
   - `kubectl -n powerdns-admin scale deploy powerdns-admin --replicas=0`
   - På powerdns01 og powerdns02: `systemctl stop pdns`
-  - ArgoCD self-heal skalerer op igen: pause auto-sync for `authentik` og `powerdns-admin` først
+  - ArgoCD self-heal skalerer op igen: merge rgorme/gitops#98 (pauser auto-sync for
+    `authentik` og `powerdns-admin`) og tjek, at begge Applications viser auto-sync slået fra
 - [ ] På prox02: dump alt, men udelad `postgres`-rollen (Patroni ejer dens password):
       `pct exec 200 -- su - postgres -c pg_dumpall | grep -vE '^(CREATE|ALTER) ROLE postgres( |;)' > /root/pg200.sql`
 - [ ] Kopiér til lederen (pg01, hvis `patronictl list` stadig siger det):
@@ -84,7 +85,7 @@ Nedetid: Authentik-login, RADIUS-login på HP 2915 og PowerDNS Authoritative
 ## 5. Start klienterne igen
 
 - [ ] På powerdns01 og powerdns02: `systemctl start pdns`, og `dig @192.168.1.61 gormsboel.dk SOA`
-- [ ] Genaktivér ArgoCD auto-sync for `authentik` og `powerdns-admin` (skalerer op igen)
+- [ ] Revert rgorme/gitops#98, så ArgoCD genaktiverer auto-sync og skalerer op igen
 - [ ] Log ind i Authentik, og log ind på HP 2915 via RADIUS (`ssh hp2915`)
 - [ ] PowerDNS-Admin viser zonen
 
