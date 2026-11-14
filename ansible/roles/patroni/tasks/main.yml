@@ -20,6 +20,26 @@
       - python3-debian
     state: present
 
+- name: Install locales
+  ansible.builtin.apt:
+    name: locales
+    state: present
+
+- name: Enable the OS locales the databases use
+  ansible.builtin.lineinfile:
+    path: /etc/locale.gen
+    regexp: '^#?\s*{{ item | regex_escape }}\s+UTF-8'
+    line: "{{ item }} UTF-8"
+  loop: "{{ patroni_os_locales }}"
+  register: patroni_locale_gen
+
+# PostgreSQL reads the locale archive at startup, so a running server only sees
+# a new locale after a restart (patronictl restart).
+- name: Generate the OS locales
+  ansible.builtin.command: locale-gen
+  when: patroni_locale_gen is changed
+  changed_when: true
+
 - name: Add the PostgreSQL (PGDG) apt repository
   ansible.builtin.deb822_repository:
     name: pgdg
