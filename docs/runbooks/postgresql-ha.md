@@ -32,15 +32,17 @@ Afklaret ved oprettelsen (13. nov. 2026):
 - Ingen extensions ud over `plpgsql`
 
 - [ ] Backup af LXC 200: `vzdump 200 --mode snapshot --storage <backup-storage>`
-- [ ] Tilføj til `ansible/secrets.yml` (`ansible-vault edit secrets.yml`):
+- [x] Tilføj til `ansible/secrets.yml` (`ansible-vault edit secrets.yml`):
       `postgresql_ha_superuser_password`, `postgresql_ha_replication_password`,
       `postgresql_ha_restapi_password` (mindst 16 tegn hver)
+- [x] Debian 12-templaten findes på alle tre noder (prox03 havde den ikke):
+      `pveam update && pveam download local debian-12-standard_12.12-1_amd64.tar.zst`
 
 ## 1. Opret containerne (Terraform)
 
-- [ ] `cd terraform/lxc && terraform plan`. Planen må kun **oprette** de tre
+- [x] `cd terraform/lxc && terraform plan`. Planen må kun **oprette** de tre
       `proxmox_virtual_environment_container.postgresql_ha[...]`, ingen ændringer i powerdns01/02
-- [ ] `terraform apply`
+- [x] `terraform apply` (alle tre oprettet 14. nov.; efterfølgende plan: `No changes`)
 - [ ] SSH virker til `root@192.168.1.57`, `.58` og `.59`. Tjek host keys mod `pct exec <vmid> -- ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`
 
 ## 2. Byg clusteret (VIP slået fra)
