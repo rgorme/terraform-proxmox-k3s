@@ -8,9 +8,11 @@ pgbackrest_stanza: "{{ postgresql_ha_cluster_name }}"
 # Must match patroni_data_dir in the patroni role.
 pgbackrest_pg_path: "/var/lib/postgresql/{{ postgresql_ha_version }}/patroni"
 
-# Retention: four weekly fulls, so point-in-time recovery reaches back about
-# four weeks. WAL older than the oldest full is expired with it.
-pgbackrest_retention_full: 4
+# Retention in days (repo1-retention-full-type=time). pgBackRest also keeps
+# the newest full older than this, so point-in-time recovery always reaches
+# back at least this far, even right after a new weekly full. Diffs and WAL
+# are expired together with the full they depend on.
+pgbackrest_retention_days: 14
 pgbackrest_full_schedule: "Sun *-*-* 01:30:00"
 pgbackrest_diff_schedule: "Mon..Sat *-*-* 01:30:00"
 

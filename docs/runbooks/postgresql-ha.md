@@ -129,7 +129,7 @@ Point-in-time recovery (PITR) for hele clusteret, uafhængigt af hvem der er led
 | Repository      | pg-witness  | `/var/lib/pgbackrest`, ejet af brugeren `pgbackrest`                  |
 | WAL-arkivering  | pg01, pg02  | `archive_command` skubber WAL til pg-witness over SSH (async, spool i `/var/spool/pgbackrest`) |
 | Backups         | pg-witness  | systemd-timere: full søndag 01:30, diff man–lør 01:30                 |
-| Retention       | –           | 4 full-backups (ca. 4 ugers PITR). WAL ældre end ældste full slettes  |
+| Retention       | –           | 14 dage (`repo1-retention-full-type=time`). PITR når altid mindst 14 dage tilbage |
 
 - Backuppen kører på pg-witness, og pgBackRest finder selv primary'en blandt
   `pg1-host` (pg01) og `pg2-host` (pg02). Efter en failover rammer næste backup den nye leder.
@@ -139,11 +139,32 @@ Point-in-time recovery (PITR) for hele clusteret, uafhængigt af hvem der er led
 - SSH: `postgres` på pg01/pg02 → `pgbackrest@.59` (arkivering, restore) og
   `pgbackrest` på pg-witness → `postgres@.57/.58` (backup). Nøglerne er genereret af
   rollen og begrænset med `from=`.
+- Retention er tidsbaseret: full-backups ældre end 14 dage slettes, men pgBackRest beholder
+  den nyeste full, der er ældre end 14 dage. Lige efter søndagens full ligger der derfor tre
+  fulls (ca. 15–21 dage), så PITR aldrig dækker under 14 dage. Diffs og WAL slettes sammen
+  med den full, de hører til
 - Er pg-witness nede, hober WAL sig op i `pg_wal` på lederen. Over 4 GiB
   (`archive-push-queue-max`) smider pgBackRest WAL'en væk for at redde lederens disk.
   Så er PITR brudt indtil næste full-backup.
 - pg-witness bærer nu både etcd-stemmen og backupperne. prox01 er stadig en anden host
   end pg01/pg02, men der er ingen offsite-kopi.
+
+### Pladsforbrug og nye databaser
+
+- Nye databaser kommer automatisk med: pgBackRest tager backup af hele clusteret
+  (alle databaser og WAL), så der er intet at sætte op pr. database
+- Følg repoets vækst på pg-witness:
+  - `runuser -u pgbackrest -- pgbackrest --stanza=pg-homelab info` viser størrelse pr. backup
+    (`database size`/`backup size`, og `repo1: backup set size` komprimeret)
+  - `du -sh /var/lib/pgbackrest/backup /var/lib/pgbackrest/archive` og `df -h /var/lib/pgbackrest`
+- Estimat (15. nov. 2026): databaserne fylder ca. 210 MB, og lederen skriver ca. 0,4 GB WAL i
+  døgnet (målt over 5 min. midt på dagen). Repoet rummer op til 21 dages data: 3 fulls,
+  op til 18 diffs og 21 døgns WAL. Med zst-komprimering bliver det ca. 3–5 GB, og ca. 10 GB
+  i værste fald uden nævneværdig komprimering
+- Tommelfingerregel: repo ≈ 3 × databasestørrelse + 21 × WAL pr. døgn (begge komprimeret,
+  plus diffs). Disken er 32 GB, så det bliver trangt, når `df` passerer ca. 75 % (ca. 24 GB),
+  eller når den komprimerede WAL nærmer sig 1 GB i døgnet (se `archive/` vokse over en uge).
+  Udvid så disken i Terraform (kun opad, ellers erstattes containeren) eller skru retention ned
 
 ### 8.1 Opsætning
 
@@ -180,7 +201,7 @@ Alt på pg-witness som `pgbackrest` (`runuser -u pgbackrest -- ...`):
   (backups og WAL). Tager lidt tid, men kører fint midt på dagen
 - `systemctl --failed` er tom, og `journalctl -u 'pgbackrest-backup@*' --since -2d` viser
   de seneste kørsler
-- `df -h /` på pg-witness: repoet skal kunne rumme 4 uger
+- `df -h /` på pg-witness: repoet skal kunne rumme op til 3 ugers backups og WAL (se nedenfor)
 - På lederen: `su postgres -c "psql -Atc 'select archived_count, failed_count, last_failed_time from pg_stat_archiver'"`.
   `failed_count` må gerne være > 0 fra fortiden, men `last_failed_time` skal være gammel
 

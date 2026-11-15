@@ -5,8 +5,8 @@ log-level-file=detail
 compress-type=zst
 {% if inventory_hostname == pgbackrest_repo_host %}
 repo1-path={{ pgbackrest_repo_path }}
-repo1-retention-full-type=count
-repo1-retention-full={{ pgbackrest_retention_full }}
+repo1-retention-full-type=time
+repo1-retention-full={{ pgbackrest_retention_days }}
 start-fast=y
 process-max=2
 {% else %}
