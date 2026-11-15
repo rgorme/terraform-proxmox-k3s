@@ -1,35 +1,24 @@
 ---
 # pg01/pg02 push WAL to the repository host over SSH as postgres -> pgbackrest,
 # and the repository host runs backups over SSH as pgbackrest -> postgres.
+# Each host reads its peers' keys from hostvars, so all of them must be in the
+# play.
+- name: Check that every pgBackRest host is in the play
+  ansible.builtin.assert:
+    that: groups['postgresql_ha'] | difference(ansible_play_hosts) | length == 0
+    fail_msg: >-
+      Run the pgbackrest play on all of postgresql_ha (no --limit): the hosts
+      exchange SSH keys with each other. Missing: {{ groups['postgresql_ha'] | difference(ansible_play_hosts) | join(', ') }}
+  run_once: true
+
 - name: Set the pgBackRest role of this host
   ansible.builtin.set_fact:
     pgbackrest_is_repo: "{{ inventory_hostname == pgbackrest_repo_host }}"
     pgbackrest_user: "{{ pgbackrest_repo_user if inventory_hostname == pgbackrest_repo_host else 'postgres' }}"
 
-- name: Install repository prerequisites
-  ansible.builtin.apt:
-    update_cache: true
-    cache_valid_time: 3600
-    name:
-      - ca-certificates
-      - python3-debian
-    state: present
-
-# pgBackRest must be the same version on every host, so all of them (the
-# witness too) take it from PGDG rather than Debian.
-- name: Add the PostgreSQL (PGDG) apt repository
-  ansible.builtin.deb822_repository:
-    name: pgdg
-    types: deb
-    uris: https://apt.postgresql.org/pub/repos/apt
-    suites: "{{ ansible_distribution_release }}-pgdg"
-    components: main
-    signed_by: https://www.postgresql.org/media/keys/ACCC4CF8.asc
-    state: present
-
+# From PGDG (the pgdg role) so every host, the witness too, has the same version.
 - name: Install pgBackRest
   ansible.builtin.apt:
-    update_cache: true
     name: pgbackrest
     state: present
 
@@ -159,9 +148,7 @@
     owner: root
     group: root
     mode: '0644'
-  loop:
-    - { type: full, schedule: "{{ pgbackrest_full_schedule }}" }
-    - { type: diff, schedule: "{{ pgbackrest_diff_schedule }}" }
+  loop: "{{ pgbackrest_timers }}"
   notify: Reload systemd
   when: pgbackrest_is_repo
 
@@ -173,38 +160,14 @@
     name: "pgbackrest-{{ item }}.timer"
     state: started
     enabled: true
-  loop: [full, diff]
+  loop: "{{ pgbackrest_timers | map(attribute='type') }}"
   when: pgbackrest_is_repo
 
-# bootstrap.dcs in config.yml only applies when the cluster is first created,
-# so WAL archiving goes into the running cluster's dynamic configuration (what
-# patronictl edit-config changes). Any Patroni node serves it.
-- name: Read Patroni's dynamic configuration
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ pgbackrest_patroni_restapi_port }}/config"
-    url_username: "{{ pgbackrest_patroni_restapi_user }}"
-    url_password: "{{ postgresql_ha_restapi_password }}"
-    force_basic_auth: true
-    return_content: true
-  register: pgbackrest_dcs
-  delegate_to: "{{ groups['postgresql'][0] }}"
-  run_once: true
-
+# WAL archiving goes into the running cluster's dynamic configuration, through
+# the same tasks the patroni role uses for its own parameters.
 - name: Enable WAL archiving in Patroni's dynamic configuration
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ pgbackrest_patroni_restapi_port }}/config"
-    method: PATCH
-    url_username: "{{ pgbackrest_patroni_restapi_user }}"
-    url_password: "{{ postgresql_ha_restapi_password }}"
-    force_basic_auth: true
-    body_format: json
-    body:
-      postgresql:
-        parameters: "{{ pgbackrest_patroni_parameters }}"
-  delegate_to: "{{ groups['postgresql'][0] }}"
-  run_once: true
-  changed_when: true
-  when: >-
-    (pgbackrest_dcs.json.postgresql.parameters | default({}))
-    | dict2items | selectattr('key', 'in', pgbackrest_patroni_parameters.keys() | list)
-    | items2dict != pgbackrest_patroni_parameters
+  ansible.builtin.include_role:
+    name: patroni
+    tasks_from: dcs-parameters
+  vars:
+    patroni_dcs_parameters: "{{ pgbackrest_patroni_parameters }}"

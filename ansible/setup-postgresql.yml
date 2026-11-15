@@ -17,6 +17,7 @@
   vars_files:
     - secrets.yml
   roles:
+    - pgdg
     - patroni
 
 # Backups: pgBackRest with WAL archiving to pg-witness. Runs without serial,
@@ -29,5 +30,6 @@
   vars_files:
     - secrets.yml
   roles:
+    - pgdg
     - pgbackrest
   tags: [pgbackrest]

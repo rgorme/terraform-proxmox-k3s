@@ -1,5 +1,7 @@
 postgresql_ha_cluster_name: pg-homelab
 postgresql_ha_version: 17
+# Patroni's data directory. Shared by the patroni and pgbackrest roles.
+postgresql_ha_data_dir: "/var/lib/postgresql/{{ postgresql_ha_version }}/patroni"
 postgresql_ha_lan_network: 192.168.1.0/24
 
 # Floating address that clients connect to. It used to be LXC 200's own IP.
