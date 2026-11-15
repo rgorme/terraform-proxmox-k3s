@@ -4,7 +4,7 @@ Description=pgBackRest {{ item.type }} backup of {{ pgbackrest_stanza }}
 
 [Timer]
 OnCalendar={{ item.schedule }}
-Persistent=true
+Persistent={{ 'true' if item.persistent else 'false' }}
 Unit=pgbackrest-backup@{{ item.type }}.service
 
 [Install]

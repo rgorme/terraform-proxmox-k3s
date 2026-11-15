@@ -134,8 +134,14 @@ Point-in-time recovery (PITR) for hele clusteret, uafhængigt af hvem der er led
 - Backuppen kører på pg-witness, og pgBackRest finder selv primary'en blandt
   `pg1-host` (pg01) og `pg2-host` (pg02). Efter en failover rammer næste backup den nye leder.
   Er der ingen primary, fejler kørslen, og `pgbackrest-backup@full.service` står som failed.
-- Begge noder har samme `archive_command` (i Patroni-DCS), men kun lederen arkiverer
-  (`archive_mode=on`, ikke `always`). Tidslinjeskift ved failover håndteres af pgBackRest.
+- Begge noder arkiverer (`archive_mode=always` i Patroni-DCS): standby'en skubber også den
+  WAL, den streamer. Dør lederen med WAL i sin async-spool, ligger den samme WAL derfor
+  allerede i repoet fra standby'en (synkron replikering). pgBackRest accepterer et segment,
+  der skubbes to gange med samme checksum. Tidslinjeskift ved failover håndteres af pgBackRest.
+- Patroni-parametre, der ændres i Ansible (`patroni_postgresql_parameters` og pgBackRests
+  `archive_*`), PATCHes ind i den dynamiske config via REST API'et på den første node i
+  `postgresql`, der er med i kørslen. `bootstrap.dcs` gælder kun ved første bootstrap.
+  Kør playbooken uden `--limit`: pgbackrest-rollen stopper, hvis en af de tre hosts mangler
 - SSH: `postgres` på pg01/pg02 → `pgbackrest@.59` (arkivering, restore) og
   `pgbackrest` på pg-witness → `postgres@.57/.58` (backup). Nøglerne er genereret af
   rollen og begrænset med `from=`.
@@ -174,13 +180,13 @@ Point-in-time recovery (PITR) for hele clusteret, uafhængigt af hvem der er led
 - [ ] `cd ansible && ansible-playbook setup-postgresql.yml --ask-vault-pass --tags pgbackrest`.
       Rollen installerer pgBackRest fra PGDG på alle tre, udveksler SSH-nøgler, kører
       `stanza-create` på pg-witness, slår timerne til og PATCHer Patronis dynamiske config
-      med `archive_mode: on` og `archive_command` (samme som `patronictl edit-config`;
+      med `archive_mode: always` og `archive_command` (samme som `patronictl edit-config`;
       `bootstrap.dcs` gælder kun ved første bootstrap)
 - [ ] `patronictl -c /etc/patroni/config.yml show-config` viser `archive_mode` og `archive_command`
 - [ ] `patronictl -c /etc/patroni/config.yml list` viser `Pending restart` på begge noder.
       `archive_mode` kræver genstart: `patronictl -c /etc/patroni/config.yml restart pg-homelab --pending`.
       Genstart af lederen giver et par sekunders afbrydelse (Authentik genforbinder)
-- [ ] På lederen: `su postgres -c "psql -Atc 'show archive_mode'"` giver `on`
+- [ ] På begge noder: `su postgres -c "psql -Atc 'show archive_mode'"` giver `always`
 - [ ] På pg-witness: `runuser -u pgbackrest -- pgbackrest --stanza=pg-homelab check`
       (tvinger et WAL-skift og venter på, at det er arkiveret)
 - [ ] Første full-backup med det samme: `systemctl start pgbackrest-backup@full.service`,
@@ -234,8 +240,12 @@ fx hvert kvartal.
    su postgres -c "/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/restore-test \
      -l /var/lib/postgresql/restore-test.log -w -t 600 start \
      -o \"-c port=5433 -c listen_addresses=127.0.0.1 -c archive_mode=off \
-         -c synchronous_standby_names='' -c shared_buffers=128MB -c cluster_name=restore-test\""
+         -c synchronous_standby_names='' -c shared_buffers=128MB -c cluster_name=restore-test \
+         -c hba_file=/var/lib/postgresql/restore-test/pg_hba.conf \
+         -c ident_file=/var/lib/postgresql/restore-test/pg_ident.conf\""
    ```
+   `hba_file`/`ident_file` skal med: Patronis `postgresql.conf` peger på filerne i
+   `/var/lib/postgresql/17/patroni`, altså den kørende standbys.
 5. Tjek:
    - `su postgres -c "psql -p 5433 -Atc 'select * from public.restore_marker'"` giver
      markør-rækken (den er slettet i det rigtige cluster)
@@ -259,9 +269,10 @@ Log over restore-tests:
 Når data i clusteret er ødelagt (fx en slettet tabel) eller begge noder er tabt. Alle
 klienter er nede undervejs. Stop dem som i trin 3, og brug break-glass til kubectl.
 
-1. Stop Patroni på begge noder: `systemctl stop patroni` (pg02 først, så lederen til sidst).
+1. Notér, hvem der er leder (`patronictl list`; nedenfor kaldet "lederen", den anden "standby'en").
+   Stop Patroni på begge noder: `systemctl stop patroni` (standby'en først, så lederen).
    keepalived slipper `.60`, når `/primary` svarer nej
-2. På pg01: restore oven i data-mappen. `--delta` genbruger uændrede filer:
+2. På lederen: restore oven i data-mappen. `--delta` genbruger uændrede filer:
    ```sh
    su postgres -c "pgbackrest --stanza=pg-homelab --delta \
      --type=time --target='<tidspunkt>' --target-action=promote restore"
@@ -275,10 +286,10 @@ klienter er nede undervejs. Stop dem som i trin 3, og brug break-glass til kubec
    Tjek data med `psql`, og stop den igen: `pg_ctl -D ... -m fast stop`
 4. Nulstil Patronis cluster-tilstand i etcd (også den dynamiske config):
    `patronictl -c /etc/patroni/config.yml remove pg-homelab` (spørger om navnet og bekræftelse)
-5. `systemctl start patroni` på pg01. Den overtager den eksisterende data-mappe som leder
+5. `systemctl start patroni` på lederen. Den overtager den eksisterende data-mappe som leder
    og skriver `bootstrap.dcs` som ny dynamisk config
-6. På pg02: `rm -rf /var/lib/postgresql/17/patroni` og `systemctl start patroni`. Den kloner
-   fra pg01 og bliver `Sync Standby`
+6. På standby'en: `rm -rf /var/lib/postgresql/17/patroni` og `systemctl start patroni`. Den
+   kloner fra lederen og bliver `Sync Standby`
 7. `ansible-playbook setup-postgresql.yml --ask-vault-pass --tags pgbackrest` (sætter
    arkiveringen i DCS igen), og `patronictl restart pg-homelab --pending`
 8. På pg-witness: `pgbackrest --stanza=pg-homelab check`, og tag straks en ny full-backup
