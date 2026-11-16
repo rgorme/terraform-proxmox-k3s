@@ -1,0 +1,99 @@
+---
+# Users and roles for Patroni's DCS access, and the switch that turns
+# authentication on. Included from the last play in setup-postgresql.yml, once
+# Patroni on both nodes holds its credentials: "auth enable" applies to the
+# whole cluster at once, and Patroni re-authenticates on its next DCS call.
+# Until then a Patroni without credentials loses the DCS and the leader
+# demotes after ttl (30 s). Every task runs once, on the first host in the play.
+- name: Find out whether etcd authentication is already enabled
+  ansible.builtin.include_tasks: auth-status.yml
+  vars:
+    etcd_probe_endpoint: "{{ etcd_endpoint }}"
+
+- name: List the etcd users
+  ansible.builtin.command:
+    cmd: etcdctl --endpoints={{ etcd_endpoint }} user list
+  environment: "{{ etcd_ctl_env }}"
+  register: etcd_users
+  changed_when: false
+  run_once: true
+
+- name: List the etcd roles
+  ansible.builtin.command:
+    cmd: etcdctl --endpoints={{ etcd_endpoint }} role list
+  environment: "{{ etcd_ctl_env }}"
+  register: etcd_roles
+  changed_when: false
+  run_once: true
+
+- name: Create the etcd root user
+  ansible.builtin.command:
+    cmd: etcdctl --endpoints={{ etcd_endpoint }} user add root:{{ postgresql_ha_etcd_root_password }}
+  environment: "{{ etcd_ctl_env }}"
+  when: "'root' not in etcd_users.stdout_lines"
+  no_log: true
+  changed_when: true
+  run_once: true
+
+# Granting an already granted role is a no-op in etcd.
+- name: Give the root user the root role
+  ansible.builtin.command:
+    cmd: etcdctl --endpoints={{ etcd_endpoint }} user grant-role root root
+  environment: "{{ etcd_ctl_env }}"
+  when: "'root' not in etcd_users.stdout_lines"
+  changed_when: true
+  run_once: true
+
+- name: Create the Patroni role
+  ansible.builtin.command:
+    cmd: etcdctl --endpoints={{ etcd_endpoint }} role add {{ etcd_patroni_user }}
+  environment: "{{ etcd_ctl_env }}"
+  when: etcd_patroni_user not in etcd_roles.stdout_lines
+  changed_when: true
+  run_once: true
+
+- name: Let the Patroni role read and write its namespace
+  ansible.builtin.command:
+    cmd: >-
+      etcdctl --endpoints={{ etcd_endpoint }} role grant-permission --prefix=true
+      {{ etcd_patroni_user }} readwrite {{ etcd_patroni_prefix }}
+  environment: "{{ etcd_ctl_env }}"
+  when: etcd_patroni_user not in etcd_roles.stdout_lines
+  changed_when: true
+  run_once: true
+
+- name: Create the Patroni user
+  ansible.builtin.command:
+    cmd: etcdctl --endpoints={{ etcd_endpoint }} user add {{ etcd_patroni_user }}:{{ postgresql_ha_etcd_password }}
+  environment: "{{ etcd_ctl_env }}"
+  when: etcd_patroni_user not in etcd_users.stdout_lines
+  no_log: true
+  changed_when: true
+  run_once: true
+
+- name: Give the Patroni user the Patroni role
+  ansible.builtin.command:
+    cmd: etcdctl --endpoints={{ etcd_endpoint }} user grant-role {{ etcd_patroni_user }} {{ etcd_patroni_user }}
+  environment: "{{ etcd_ctl_env }}"
+  when: etcd_patroni_user not in etcd_users.stdout_lines
+  changed_when: true
+  run_once: true
+
+- name: Enable etcd authentication
+  when: not etcd_auth_enabled | bool
+  run_once: true
+  block:
+    - name: Make sure Patroni on every PostgreSQL host got its credentials in this run
+      ansible.builtin.assert:
+        that:
+          - groups['postgresql'] | difference(ansible_play_hosts_all) | length == 0
+        fail_msg: >-
+          Run setup-postgresql.yml without --limit the first time, so the Patroni
+          play puts the etcd credentials on every PostgreSQL host before
+          authentication is enabled.
+
+    - name: Turn etcd authentication on (whole cluster, takes effect at once)
+      ansible.builtin.command:
+        cmd: etcdctl --endpoints={{ etcd_endpoint }} auth enable
+      environment: "{{ etcd_ctl_env }}"
+      changed_when: true

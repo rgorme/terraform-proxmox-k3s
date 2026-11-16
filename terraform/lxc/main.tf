@@ -126,23 +126,31 @@ resource "proxmox_virtual_environment_container" "powerdns02" {
 # PostgreSQL HA: Patroni on pg01/pg02 (one per Proxmox host) and an etcd-only
 # witness on prox01, so etcd keeps quorum when either PostgreSQL host is down.
 # Clients use the keepalived VIP 192.168.1.60, which follows the Patroni leader.
+#
+# unprivileged: the three were created privileged (the provider default) and
+# changing it replaces the container. Set it to true for a container right
+# before it is rebuilt (one at a time, see the runbook). The features block
+# below (nesting) is needed either way; keepalived and Patroni need nothing
+# else in an unprivileged container.
 locals {
   postgresql_ha_containers = {
     pg01 = {
-      node_name = "prox02"
-      vm_id     = 203
-      address   = "192.168.1.57/24"
-      cores     = 2
-      memory    = 2048
-      disk_size = 32
+      node_name    = "prox02"
+      vm_id        = 203
+      address      = "192.168.1.57/24"
+      cores        = 2
+      memory       = 2048
+      disk_size    = 32
+      unprivileged = false
     }
     pg02 = {
-      node_name = "prox03"
-      vm_id     = 204
-      address   = "192.168.1.58/24"
-      cores     = 2
-      memory    = 2048
-      disk_size = 32
+      node_name    = "prox03"
+      vm_id        = 204
+      address      = "192.168.1.58/24"
+      cores        = 2
+      memory       = 2048
+      disk_size    = 32
+      unprivileged = false
     }
     pg-witness = {
       node_name = "prox01"
@@ -151,7 +159,8 @@ locals {
       cores     = 1
       memory    = 512
       # Holds the pgBackRest repository (14 days of PITR, room for more databases).
-      disk_size = 32
+      disk_size    = 32
+      unprivileged = false
     }
   }
 }
@@ -164,6 +173,8 @@ resource "proxmox_virtual_environment_container" "postgresql_ha" {
 
   description = "PostgreSQL HA (${each.key})"
   tags        = ["postgresql"]
+
+  unprivileged = each.value.unprivileged
 
   cpu {
     cores = each.value.cores

@@ -1,0 +1,26 @@
+---
+# Sets etcd_auth_enabled and etcd_ctl_env for the endpoint in etcd_probe_endpoint.
+# "user list" needs the root role once authentication is on, so the error it
+# returns without credentials tells the state. etcdctl 3.4 (Debian 12) refuses
+# --user against a cluster without authentication, so the root credentials are
+# only put in the environment once authentication is on.
+# etcd_probe_retries > 1 also makes this a wait for the member to serve requests.
+- name: Probe whether etcd authentication is enabled
+  ansible.builtin.command:
+    cmd: etcdctl --endpoints={{ etcd_probe_endpoint }} user list
+  environment:
+    ETCDCTL_API: "3"
+  register: etcd_auth_probe
+  retries: "{{ etcd_probe_retries | default(1) }}"
+  delay: 5
+  until: etcd_auth_probe.rc == 0 or 'user name is empty' in etcd_auth_probe.stderr
+  failed_when: etcd_auth_probe.rc != 0 and 'user name is empty' not in etcd_auth_probe.stderr
+  changed_when: false
+
+- name: Record the etcd authentication state
+  ansible.builtin.set_fact:
+    etcd_auth_enabled: "{{ etcd_auth_probe.rc != 0 }}"
+    etcd_ctl_env: >-
+      {{ {'ETCDCTL_API': '3'}
+         | combine({'ETCDCTL_USER': 'root:' ~ postgresql_ha_etcd_root_password} if etcd_auth_probe.rc != 0 else {}) }}
+  no_log: true

@@ -2,3 +2,15 @@ etcd_client_port: 2379
 etcd_peer_port: 2380
 etcd_data_dir: /var/lib/etcd/default
 etcd_cluster_token: "{{ postgresql_ha_cluster_name }}-etcd"
+etcd_endpoint: "http://127.0.0.1:{{ etcd_client_port }}"
+etcd_peer_url: "http://{{ ansible_host }}:{{ etcd_peer_port }}"
+
+# Written into the bootstrap marker so a later run renders the same value and
+# does not restart the member. join.yml sets it to "existing" for a member that
+# joins a running cluster.
+etcd_bootstrap_marker: /var/lib/etcd/.cluster-bootstrapped
+
+# Patroni's etcd user may only touch its own namespace (etcd3.namespace in
+# Patroni, default /service/). Cluster membership and the other keys need root.
+etcd_patroni_user: patroni
+etcd_patroni_prefix: /service/
