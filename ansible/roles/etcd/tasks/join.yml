@@ -5,18 +5,6 @@
 # running cluster is refused, so ask the peers first. Only the members with the
 # marker missing run this, so a first bootstrap still starts all three at once.
 
-# The Debian package starts a single-node etcd on install. Its data directory
-# would make this member ignore ETCD_INITIAL_CLUSTER, so remove it once.
-- name: Stop the single-node etcd started by the package
-  ansible.builtin.systemd_service:
-    name: etcd
-    state: stopped
-
-- name: Remove the single-node etcd data
-  ansible.builtin.file:
-    path: "{{ etcd_data_dir }}"
-    state: absent
-
 # "member list" needs no credentials even with authentication on. The package
 # etcd on a not yet configured peer listens on localhost only, so it does not
 # answer here.
@@ -42,6 +30,50 @@
   ansible.builtin.set_fact:
     etcd_initial_cluster_state: new
   when: etcd_join_peer == ''
+
+# A missing marker is a weak signal: it is also missing when someone deleted
+# it, or /var/lib/etcd was restored from a backup that predates it, on a member
+# that is part of the running cluster. Such a member must not be wiped. The
+# local etcd answers on 127.0.0.1 in both cases (the package's single-node etcd
+# too), so compare cluster IDs: the same cluster as the peer means a live member.
+- name: Ask the local etcd which cluster it belongs to
+  ansible.builtin.command:
+    cmd: etcdctl --endpoints={{ etcd_endpoint }} --dial-timeout=3s --command-timeout=5s member list -w json
+  environment:
+    ETCDCTL_API: "3"
+  register: etcd_local_member_list
+  failed_when: false
+  changed_when: false
+  when: etcd_join_peer != ''
+
+- name: Refuse to wipe a member of the running cluster
+  ansible.builtin.assert:
+    that:
+      - >-
+        etcd_force_rejoin | default(false) | bool
+        or etcd_local_member_list.rc != 0
+        or (etcd_local_member_list.stdout | from_json).header.cluster_id
+           != ((etcd_peer_member_lists.results | selectattr('item', 'equalto', etcd_join_peer) | first).stdout
+               | from_json).header.cluster_id
+    fail_msg: >-
+      etcd on {{ inventory_hostname }} is a member of the running cluster, but
+      {{ etcd_bootstrap_marker }} is missing. Recreate the marker
+      (echo new > {{ etcd_bootstrap_marker }}) instead of rebuilding the member,
+      or run with -e etcd_force_rejoin=true to wipe it and let it rejoin.
+    quiet: true
+  when: etcd_join_peer != ''
+
+# The Debian package starts a single-node etcd on install. Its data directory
+# would make this member ignore ETCD_INITIAL_CLUSTER, so remove it once.
+- name: Stop the single-node etcd started by the package
+  ansible.builtin.systemd_service:
+    name: etcd
+    state: stopped
+
+- name: Remove the single-node etcd data
+  ansible.builtin.file:
+    path: "{{ etcd_data_dir }}"
+    state: absent
 
 - name: Join the existing cluster
   when: etcd_join_peer != ''

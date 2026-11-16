@@ -20,7 +20,7 @@ etcd3:
     - {{ hostvars[h].ansible_host }}:2379
 {% endfor %}
   # Harmless while etcd authentication is off; required once it is on.
-  username: {{ etcd_patroni_user }}
+  username: {{ postgresql_ha_etcd_user }}
   password: {{ postgresql_ha_etcd_password | to_json }}
 
 bootstrap:

@@ -120,6 +120,7 @@ med `RuntimeDirectory=postgresql`, som er lagt ind på begge noder.
 - [ ] Efter en uges drift: slet LXC 200 (`pct destroy 200`). vzdump-backuppen fra trin 0 bliver liggende
 - [ ] Backup: HA er ikke backup. pgBackRest er sat op i Ansible, se trin 8
 - [ ] Grafana/alarmer: alarm på `patroni_primary` = 0 i hele clusteret og på replikerings-lag
+- [ ] etcd: klient-TLS, så Patronis login ikke går over ren HTTP (se "Slå etcd-login til")
 - [ ] Opdatér idétavlen
 
 ## 8. Backup med pgBackRest
@@ -335,8 +336,13 @@ Patroni DCS'en og lederen demoterer efter `ttl` (30 s).
 Playbooken gør det i den rigtige rækkefølge: etcd-rollen (ingen genstart af etcd, filen
 `/etc/default/etcd` er uændret), så Patroni-rollen (ny `config.yml` med `etcd3.username`
 og `password`, `reload` af Patroni, én node ad gangen), og til sidst et play med tagget
-`etcd_auth`, der opretter brugerne og slår login til. Det play nægter at slå login til,
-hvis ikke begge PostgreSQL-noder var med i kørslen (`--limit`).
+`etcd_auth`, der opretter brugerne og slår login til. Det play nægter at slå login til, før
+`/etc/patroni/config.yml` på begge PostgreSQL-noder har brugernavnet (det læser filen på
+begge, også ved `--limit`).
+
+Trafikken er stadig ren HTTP: adgangskoden og Patronis token kan opsnappes af en, der sidder
+på vejen (ARP-spoofing på LAN'et). Login lukker for tilfældige skrivninger, ikke for det.
+Næste trin er klient-TLS på etcd (`cacert`/`cert`/`key` i Patronis `etcd3`-sektion), se afsnit 7.
 
 - [ ] Tilføj til `ansible/secrets.yml` (`ansible-vault edit secrets.yml`):
       `postgresql_ha_etcd_root_password` og `postgresql_ha_etcd_password` (mindst 16 tegn)
@@ -379,16 +385,19 @@ eller peer-URL, kører `member add` og skriver `existing` i markøren. Første g
 bygges, svarer ingen peers, og alle tre starter med `new` som før. De to andre medlemmer skal
 være sunde: medlemsskift kræver quorum (2 af 3).
 
-Pas på: mangler markøren på et medlem, der faktisk kører, sletter rollen dets datamappe og
-lader det gen-joine. Det er ufarligt for clusteret (de to andre har data), men lav ikke
-markøren om i hånden.
+Mangler markøren på et medlem, der faktisk kører i clusteret (slettet i hånden, eller
+`/var/lib/etcd` restoret fra en ældre backup), nægter rollen at slette dets datamappe: den
+sammenligner cluster-ID fra den lokale etcd med peerens. Genskab markøren
+(`echo new > /var/lib/etcd/.cluster-bootstrapped`), eller kør med `-e etcd_force_rejoin=true`,
+hvis medlemmet virkelig skal bygges om.
 
 - [ ] Byg containeren igen (Terraform, se "Skift til unprivileged containere") og fjern den
       gamle host key: `ssh-keygen -R 192.168.1.59` (eller `.57`/`.58`)
 - [ ] På et af de andre medlemmer: `etcdctl --user root:... endpoint health --cluster` viser
       to sunde og ét fejlende medlem. Fortsæt kun hvis de to er sunde
-- [ ] `ansible-playbook setup-postgresql.yml --ask-vault-pass --limit pg-witness` (for pg01/pg02:
-      uden `--limit`, så Patroni-rollen også kører; se nedenfor). Forvent `changed` på
+- [ ] `ansible-playbook setup-postgresql.yml --ask-vault-pass` uden `--limit`: etcd- og
+      Patroni-rollerne er no-ops på de sunde noder, og pgbackrest-playet (afsnit 8) kræver alle
+      tre hosts for at udveksle SSH-nøgler med den nye. Forvent `changed` på
       "Remove the old entry for this host" og "Add this host to the cluster"
 - [ ] `etcdctl --user root:... member list` viser tre startede medlemmer med nye ID for det
       genopbyggede, og `endpoint health --cluster` er sund på alle tre

@@ -26,22 +26,26 @@
   changed_when: false
   run_once: true
 
+# Passwords go in on stdin (--interactive=false), never on the command line,
+# where every local user could read them from /proc while etcdctl runs.
 - name: Create the etcd root user
   ansible.builtin.command:
-    cmd: etcdctl --endpoints={{ etcd_endpoint }} user add root:{{ postgresql_ha_etcd_root_password }}
+    cmd: etcdctl --endpoints={{ etcd_endpoint }} user add root --interactive=false
+    stdin: "{{ postgresql_ha_etcd_root_password }}"
   environment: "{{ etcd_ctl_env }}"
   when: "'root' not in etcd_users.stdout_lines"
   no_log: true
   changed_when: true
   run_once: true
 
-# Granting an already granted role is a no-op in etcd.
+# The grants run every time: etcd ignores a role that is already granted and a
+# permission that is already set, and a run that was interrupted between
+# "user add" and the grant must not leave root without the root role for good.
 - name: Give the root user the root role
   ansible.builtin.command:
     cmd: etcdctl --endpoints={{ etcd_endpoint }} user grant-role root root
   environment: "{{ etcd_ctl_env }}"
-  when: "'root' not in etcd_users.stdout_lines"
-  changed_when: true
+  changed_when: false
   run_once: true
 
 - name: Create the Patroni role
@@ -58,13 +62,13 @@
       etcdctl --endpoints={{ etcd_endpoint }} role grant-permission --prefix=true
       {{ etcd_patroni_user }} readwrite {{ etcd_patroni_prefix }}
   environment: "{{ etcd_ctl_env }}"
-  when: etcd_patroni_user not in etcd_roles.stdout_lines
-  changed_when: true
+  changed_when: false
   run_once: true
 
 - name: Create the Patroni user
   ansible.builtin.command:
-    cmd: etcdctl --endpoints={{ etcd_endpoint }} user add {{ etcd_patroni_user }}:{{ postgresql_ha_etcd_password }}
+    cmd: etcdctl --endpoints={{ etcd_endpoint }} user add {{ etcd_patroni_user }} --interactive=false
+    stdin: "{{ postgresql_ha_etcd_password }}"
   environment: "{{ etcd_ctl_env }}"
   when: etcd_patroni_user not in etcd_users.stdout_lines
   no_log: true
@@ -75,22 +79,37 @@
   ansible.builtin.command:
     cmd: etcdctl --endpoints={{ etcd_endpoint }} user grant-role {{ etcd_patroni_user }} {{ etcd_patroni_user }}
   environment: "{{ etcd_ctl_env }}"
-  when: etcd_patroni_user not in etcd_users.stdout_lines
-  changed_when: true
+  changed_when: false
   run_once: true
 
 - name: Enable etcd authentication
   when: not etcd_auth_enabled | bool
   run_once: true
   block:
-    - name: Make sure Patroni on every PostgreSQL host got its credentials in this run
+    # The switch applies to the whole cluster at once, so every Patroni must
+    # already hold its credentials: check the file on disk on each PostgreSQL
+    # host (also the ones left out with --limit), not just who is in the play.
+    # The patroni role reloads Patroni whenever it writes this file.
+    - name: Read Patroni's configuration on every PostgreSQL host
+      ansible.builtin.slurp:
+        src: /etc/patroni/config.yml
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['postgresql'] }}"
+      register: etcd_patroni_configs
+      no_log: true
+
+    - name: Make sure Patroni on every PostgreSQL host holds its etcd credentials
       ansible.builtin.assert:
         that:
-          - groups['postgresql'] | difference(ansible_play_hosts_all) | length == 0
+          - >-
+            etcd_patroni_configs.results | map(attribute='content') | map('b64decode')
+            | select('search', '^\s*username: ' ~ etcd_patroni_user ~ '\s*$', multiline=true)
+            | list | length == groups['postgresql'] | length
         fail_msg: >-
-          Run setup-postgresql.yml without --limit the first time, so the Patroni
-          play puts the etcd credentials on every PostgreSQL host before
-          authentication is enabled.
+          /etc/patroni/config.yml lacks etcd3.username on at least one PostgreSQL
+          host. Run the Patroni play first (setup-postgresql.yml without --limit
+          and without --tags etcd_auth), then enable authentication.
+        quiet: true
 
     - name: Turn etcd authentication on (whole cluster, takes effect at once)
       ansible.builtin.command:

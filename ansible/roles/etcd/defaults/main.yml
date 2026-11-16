@@ -12,5 +12,5 @@ etcd_bootstrap_marker: /var/lib/etcd/.cluster-bootstrapped
 
 # Patroni's etcd user may only touch its own namespace (etcd3.namespace in
 # Patroni, default /service/). Cluster membership and the other keys need root.
-etcd_patroni_user: patroni
+etcd_patroni_user: "{{ postgresql_ha_etcd_user }}"
 etcd_patroni_prefix: /service/
