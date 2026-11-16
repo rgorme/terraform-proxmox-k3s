@@ -1,0 +1,28 @@
+---
+# The PostgreSQL (PGDG) apt repository. Patroni hosts take PostgreSQL from it,
+# and every host (the witness too) takes pgBackRest from it, so the versions
+# match across the cluster.
+- name: Install repository prerequisites
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    name:
+      - ca-certificates
+      - python3-debian
+    state: present
+
+- name: Add the PostgreSQL (PGDG) apt repository
+  ansible.builtin.deb822_repository:
+    name: pgdg
+    types: deb
+    uris: https://apt.postgresql.org/pub/repos/apt
+    suites: "{{ ansible_distribution_release }}-pgdg"
+    components: main
+    signed_by: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+    state: present
+  register: pgdg_repository
+
+- name: Refresh the apt cache after adding the repository
+  ansible.builtin.apt:
+    update_cache: true
+  when: pgdg_repository is changed

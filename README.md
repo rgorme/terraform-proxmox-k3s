@@ -130,8 +130,14 @@ cd ansible
 ansible-playbook setup-postgresql.yml --ask-vault-pass
 ```
 
-Migration from the old single container (LXC 200) and failover tests are in
-`docs/runbooks/postgresql-ha.md`.
+PostgreSQL parameters (`patroni_postgresql_parameters`) are applied to the
+running cluster through Patroni's REST API, so changing them in Ansible takes
+effect on the next run; parameters that need a restart wait for
+`patronictl restart pg-homelab --pending`. The `pgbackrest` play (tag
+`pgbackrest`) sets up pgBackRest backups with WAL archiving to `pg-witness`.
+
+Migration from the old single container (LXC 200), failover tests and backups
+are in `docs/runbooks/postgresql-ha.md`.
 
 ## PowerDNS Management
 

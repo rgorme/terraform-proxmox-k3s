@@ -1,0 +1,30 @@
+# Managed by Ansible
+[global]
+log-level-console=info
+log-level-file=detail
+compress-type=zst
+{% if inventory_hostname == pgbackrest_repo_host %}
+repo1-path={{ pgbackrest_repo_path }}
+repo1-retention-full-type=time
+repo1-retention-full={{ pgbackrest_retention_days }}
+start-fast=y
+process-max=2
+{% else %}
+repo1-host={{ hostvars[pgbackrest_repo_host].ansible_host }}
+repo1-host-user={{ pgbackrest_repo_user }}
+archive-async=y
+spool-path=/var/spool/pgbackrest
+archive-push-queue-max={{ pgbackrest_archive_push_queue_max }}
+{% endif %}
+
+[{{ pgbackrest_stanza }}]
+{% if inventory_hostname == pgbackrest_repo_host %}
+{# The backup command finds the primary among these by itself. #}
+{% for h in groups['postgresql'] %}
+pg{{ loop.index }}-host={{ hostvars[h].ansible_host }}
+pg{{ loop.index }}-host-user=postgres
+pg{{ loop.index }}-path={{ pgbackrest_pg_path }}
+{% endfor %}
+{% else %}
+pg1-path={{ pgbackrest_pg_path }}
+{% endif %}

@@ -17,4 +17,19 @@
   vars_files:
     - secrets.yml
   roles:
+    - pgdg
     - patroni
+
+# Backups: pgBackRest with WAL archiving to pg-witness. Runs without serial,
+# since the hosts exchange SSH keys. It does not restart PostgreSQL: the first
+# run leaves a pending restart for archive_mode (see the runbook, section 8).
+- name: Configure pgBackRest backups
+  hosts: postgresql_ha
+  become: true
+  gather_facts: true
+  vars_files:
+    - secrets.yml
+  roles:
+    - pgdg
+    - pgbackrest
+  tags: [pgbackrest]

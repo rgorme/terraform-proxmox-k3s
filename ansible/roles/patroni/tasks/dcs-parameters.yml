@@ -1,0 +1,45 @@
+---
+# bootstrap.dcs in config.yml only applies when the cluster is first created.
+# Later changes go into the running cluster's dynamic configuration through the
+# REST API, the same change patronictl edit-config makes. Any member serves
+# /config, so the first PostgreSQL host still in the play is used; that also
+# works when the first inventory host is down.
+#
+# Input: patroni_dcs_parameters, the postgresql.parameters to enforce. Keys not
+# in it are left alone. Some parameters (archive_mode, shared_buffers, ...)
+# only take effect after patronictl restart <cluster> --pending.
+- name: Check that a PostgreSQL host is in the play
+  ansible.builtin.assert:
+    that: ansible_play_hosts | intersect(groups['postgresql']) | length > 0
+    fail_msg: No reachable host in the postgresql group to talk to Patroni's REST API.
+  run_once: true
+
+- name: Read Patroni's dynamic configuration
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ patroni_restapi_port }}/config"
+    url_username: "{{ patroni_restapi_user }}"
+    url_password: "{{ postgresql_ha_restapi_password }}"
+    force_basic_auth: true
+    return_content: true
+  register: patroni_dcs
+  delegate_to: "{{ ansible_play_hosts | intersect(groups['postgresql']) | first }}"
+  run_once: true
+
+- name: Set PostgreSQL parameters in Patroni's dynamic configuration
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ patroni_restapi_port }}/config"
+    method: PATCH
+    url_username: "{{ patroni_restapi_user }}"
+    url_password: "{{ postgresql_ha_restapi_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      postgresql:
+        parameters: "{{ patroni_dcs_parameters }}"
+  delegate_to: "{{ ansible_play_hosts | intersect(groups['postgresql']) | first }}"
+  run_once: true
+  changed_when: true
+  when: >-
+    (patroni_dcs.json.postgresql.parameters | default({}))
+    | dict2items | selectattr('key', 'in', patroni_dcs_parameters.keys() | list)
+    | items2dict != patroni_dcs_parameters

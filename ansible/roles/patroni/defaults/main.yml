@@ -1,9 +1,12 @@
 patroni_restapi_port: 8008
 patroni_restapi_user: patroni
 patroni_replication_user: replicator
-patroni_data_dir: "/var/lib/postgresql/{{ postgresql_ha_version }}/patroni"
+patroni_data_dir: "{{ postgresql_ha_data_dir }}"
 patroni_bin_dir: "/usr/lib/postgresql/{{ postgresql_ha_version }}/bin"
 
+# Applied at bootstrap (bootstrap.dcs) and kept in the dynamic configuration
+# afterwards (tasks/dcs-parameters.yml). Changes to parameters that need a
+# restart show up as "Pending restart" in patronictl list.
 patroni_postgresql_parameters:
   max_connections: 200
   shared_buffers: 512MB

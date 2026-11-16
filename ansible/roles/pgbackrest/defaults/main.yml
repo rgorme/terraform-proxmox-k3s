@@ -1,0 +1,38 @@
+# Repository host: backups run here and pull from whichever PostgreSQL host is
+# primary. It must not be pg01 or pg02, or losing that host loses the backups.
+pgbackrest_repo_host: pg-witness
+pgbackrest_repo_user: pgbackrest
+pgbackrest_repo_path: /var/lib/pgbackrest
+pgbackrest_stanza: "{{ postgresql_ha_cluster_name }}"
+
+pgbackrest_pg_path: "{{ postgresql_ha_data_dir }}"
+
+# Retention in days (repo1-retention-full-type=time). pgBackRest also keeps
+# the newest full older than this, so point-in-time recovery always reaches
+# back at least this far, even right after a new weekly full. Diffs and WAL
+# are expired together with the full they depend on.
+pgbackrest_retention_days: 14
+pgbackrest_full_schedule: "Sun *-*-* 01:30:00"
+pgbackrest_diff_schedule: "Mon..Sat *-*-* 01:30:00"
+# Timers with persistent: true catch up at boot when the host was down at the
+# scheduled time. Only the full does: a missed diff is covered by the next one,
+# and two catch-up runs at once would fight over pgBackRest's stanza lock.
+pgbackrest_timers:
+  - { type: full, schedule: "{{ pgbackrest_full_schedule }}", persistent: true }
+  - { type: diff, schedule: "{{ pgbackrest_diff_schedule }}", persistent: false }
+
+# If the repository host is unreachable, WAL queues up on the primary. Past
+# this size pgBackRest drops it (breaking PITR until the next full) rather than
+# fill the primary's disk.
+pgbackrest_archive_push_queue_max: 4GiB
+
+# Applied to Patroni's dynamic (DCS) configuration through the patroni role.
+# archive_mode needs a PostgreSQL restart: patronictl restart <cluster> --pending.
+#
+# "always" rather than "on": the standby archives the WAL it streams too, so
+# the WAL a dead leader still had in its async spool is in the repository all
+# the same (synchronous replication means the standby has it). pgBackRest
+# accepts a segment pushed twice when the checksums match.
+pgbackrest_patroni_parameters:
+  archive_mode: always
+  archive_command: "pgbackrest --stanza={{ pgbackrest_stanza }} archive-push %p"

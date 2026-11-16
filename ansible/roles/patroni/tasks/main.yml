@@ -10,16 +10,6 @@
       and postgresql_ha_restapi_password (16+ characters) in ansible/secrets.yml.
   no_log: true
 
-- name: Install repository prerequisites
-  ansible.builtin.apt:
-    update_cache: true
-    cache_valid_time: 3600
-    name:
-      - ca-certificates
-      - curl
-      - python3-debian
-    state: present
-
 - name: Install locales
   ansible.builtin.apt:
     name: locales
@@ -40,16 +30,6 @@
   when: patroni_locale_gen is changed
   changed_when: true
 
-- name: Add the PostgreSQL (PGDG) apt repository
-  ansible.builtin.deb822_repository:
-    name: pgdg
-    types: deb
-    uris: https://apt.postgresql.org/pub/repos/apt
-    suites: "{{ ansible_distribution_release }}-pgdg"
-    components: main
-    signed_by: https://www.postgresql.org/media/keys/ACCC4CF8.asc
-    state: present
-
 - name: Create the postgresql-common configuration directory
   ansible.builtin.file:
     path: /etc/postgresql-common
@@ -66,15 +46,16 @@
     group: root
     mode: '0644'
 
+# curl is the keepalived check script (keepalived.conf.j2).
 - name: Install PostgreSQL, Patroni and keepalived
   ansible.builtin.apt:
-    update_cache: true
     name:
       - "postgresql-{{ postgresql_ha_version }}"
       - patroni
       - python3-etcd
       - python3-psycopg2
       - keepalived
+      - curl
     state: present
 
 # Patroni starts PostgreSQL itself; the Debian wrapper unit must stay out of it.
@@ -153,6 +134,11 @@
   retries: 60
   delay: 5
   until: patroni_health.status == 200
+
+- name: Keep the PostgreSQL parameters in the dynamic configuration
+  ansible.builtin.include_tasks: dcs-parameters.yml
+  vars:
+    patroni_dcs_parameters: "{{ patroni_postgresql_parameters }}"
 
 - name: Configure keepalived for the PostgreSQL VIP
   ansible.builtin.template:

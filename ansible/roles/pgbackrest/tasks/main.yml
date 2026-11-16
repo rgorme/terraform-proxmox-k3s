@@ -1,0 +1,173 @@
+---
+# pg01/pg02 push WAL to the repository host over SSH as postgres -> pgbackrest,
+# and the repository host runs backups over SSH as pgbackrest -> postgres.
+# Each host reads its peers' keys from hostvars, so all of them must be in the
+# play.
+- name: Check that every pgBackRest host is in the play
+  ansible.builtin.assert:
+    that: groups['postgresql_ha'] | difference(ansible_play_hosts) | length == 0
+    fail_msg: >-
+      Run the pgbackrest play on all of postgresql_ha (no --limit): the hosts
+      exchange SSH keys with each other. Missing: {{ groups['postgresql_ha'] | difference(ansible_play_hosts) | join(', ') }}
+  run_once: true
+
+- name: Set the pgBackRest role of this host
+  ansible.builtin.set_fact:
+    pgbackrest_is_repo: "{{ inventory_hostname == pgbackrest_repo_host }}"
+    pgbackrest_user: "{{ pgbackrest_repo_user if inventory_hostname == pgbackrest_repo_host else 'postgres' }}"
+
+# From PGDG (the pgdg role) so every host, the witness too, has the same version.
+- name: Install pgBackRest
+  ansible.builtin.apt:
+    name: pgbackrest
+    state: present
+
+- name: Create the pgBackRest repository group
+  ansible.builtin.group:
+    name: "{{ pgbackrest_repo_user }}"
+    system: true
+  when: pgbackrest_is_repo
+
+- name: Create the pgBackRest repository user
+  ansible.builtin.user:
+    name: "{{ pgbackrest_repo_user }}"
+    group: "{{ pgbackrest_repo_user }}"
+    system: true
+    shell: /bin/bash
+    home: "/home/{{ pgbackrest_repo_user }}"
+    create_home: true
+  when: pgbackrest_is_repo
+
+- name: Generate an SSH key for the pgBackRest user
+  ansible.builtin.user:
+    name: "{{ pgbackrest_user }}"
+    generate_ssh_key: true
+    ssh_key_type: ed25519
+    ssh_key_comment: "{{ pgbackrest_user }}@{{ inventory_hostname }} (pgbackrest)"
+  register: pgbackrest_user_info
+
+- name: Create the pgBackRest directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ pgbackrest_user }}"
+    group: "{{ pgbackrest_user }}"
+    mode: '0750'
+  loop: >-
+    {{ ['/var/log/pgbackrest']
+       + ([pgbackrest_repo_path] if pgbackrest_is_repo else ['/var/spool/pgbackrest']) }}
+
+- name: Read this host's SSH keys
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  loop:
+    - "{{ pgbackrest_user_info.home }}/.ssh/id_ed25519.pub"
+    - /etc/ssh/ssh_host_ed25519_key.pub
+  register: pgbackrest_keys
+
+- name: Remember this host's SSH keys
+  ansible.builtin.set_fact:
+    pgbackrest_user_pubkey: "{{ (pgbackrest_keys.results[0].content | b64decode).split()[:2] | join(' ') }}"
+    pgbackrest_host_pubkey: "{{ (pgbackrest_keys.results[1].content | b64decode).split()[:2] | join(' ') }}"
+
+# The peers of the repository host are the PostgreSQL hosts, and the peer of a
+# PostgreSQL host is the repository host.
+- name: Set the SSH peers of this host
+  ansible.builtin.set_fact:
+    pgbackrest_peers: "{{ groups['postgresql'] if pgbackrest_is_repo else [pgbackrest_repo_host] }}"
+
+- name: Authorize the peers' pgBackRest keys
+  ansible.posix.authorized_key:
+    user: "{{ pgbackrest_user }}"
+    key: "{{ hostvars[item].pgbackrest_user_pubkey }}"
+    key_options: >-
+      from="{{ hostvars[item].ansible_host }}",no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-pty
+    state: present
+  loop: "{{ pgbackrest_peers }}"
+
+- name: Trust the peers' SSH host keys
+  ansible.builtin.known_hosts:
+    path: "{{ pgbackrest_user_info.home }}/.ssh/known_hosts"
+    name: "{{ hostvars[item].ansible_host }}"
+    key: "{{ hostvars[item].ansible_host }} {{ hostvars[item].pgbackrest_host_pubkey }}"
+    state: present
+  loop: "{{ pgbackrest_peers }}"
+
+- name: Give the pgBackRest user its known_hosts file
+  ansible.builtin.file:
+    path: "{{ pgbackrest_user_info.home }}/.ssh/known_hosts"
+    owner: "{{ pgbackrest_user }}"
+    group: "{{ pgbackrest_user }}"
+    mode: '0644'
+
+- name: Create the pgBackRest configuration directory
+  ansible.builtin.file:
+    path: /etc/pgbackrest
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Configure pgBackRest
+  ansible.builtin.template:
+    src: pgbackrest.conf.j2
+    dest: /etc/pgbackrest/pgbackrest.conf
+    owner: root
+    group: "{{ pgbackrest_user }}"
+    mode: '0640'
+
+# pgBackRest only reads /etc/pgbackrest.conf (the Debian package's stub) when
+# /etc/pgbackrest/pgbackrest.conf is missing. Remove it to avoid confusion.
+- name: Remove the packaged configuration stub
+  ansible.builtin.file:
+    path: /etc/pgbackrest.conf
+    state: absent
+
+# stanza-create only needs the primary running, not WAL archiving. runuser
+# instead of become_user, which would need acl or pipelining on the container.
+- name: Create the pgBackRest stanza
+  ansible.builtin.command:
+    cmd: runuser -u {{ pgbackrest_repo_user }} -- pgbackrest --stanza={{ pgbackrest_stanza }} stanza-create
+    creates: "{{ pgbackrest_repo_path }}/backup/{{ pgbackrest_stanza }}/backup.info"
+  when: pgbackrest_is_repo
+
+- name: Install the pgBackRest backup service
+  ansible.builtin.template:
+    src: pgbackrest-backup@.service.j2
+    dest: /etc/systemd/system/pgbackrest-backup@.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload systemd
+  when: pgbackrest_is_repo
+
+- name: Install the pgBackRest backup timers
+  ansible.builtin.template:
+    src: pgbackrest-backup.timer.j2
+    dest: "/etc/systemd/system/pgbackrest-{{ item.type }}.timer"
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ pgbackrest_timers }}"
+  notify: Reload systemd
+  when: pgbackrest_is_repo
+
+- name: Reload systemd before enabling the timers
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable the pgBackRest backup timers
+  ansible.builtin.systemd_service:
+    name: "pgbackrest-{{ item }}.timer"
+    state: started
+    enabled: true
+  loop: "{{ pgbackrest_timers | map(attribute='type') }}"
+  when: pgbackrest_is_repo
+
+# WAL archiving goes into the running cluster's dynamic configuration, through
+# the same tasks the patroni role uses for its own parameters.
+- name: Enable WAL archiving in Patroni's dynamic configuration
+  ansible.builtin.include_role:
+    name: patroni
+    tasks_from: dcs-parameters
+  vars:
+    patroni_dcs_parameters: "{{ pgbackrest_patroni_parameters }}"
