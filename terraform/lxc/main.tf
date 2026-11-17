@@ -207,5 +207,15 @@ resource "proxmox_virtual_environment_container" "postgresql_ha" {
     type             = "debian"
   }
 
+  # Without nesting, systemd cannot set up mount namespaces in the container:
+  # systemd-logind never starts, so every SSH login waits 25 s in pam_systemd
+  # and pgBackRest's archive-push and backups time out. Proxmox only lets
+  # root@pam change features on a privileged container, so the API token cannot
+  # apply this; it was set with `pct set <vmid> --features nesting=1` on the
+  # host, followed by a rolling reboot (runbook 8.1).
+  features {
+    nesting = true
+  }
+
   start_on_boot = true
 }
