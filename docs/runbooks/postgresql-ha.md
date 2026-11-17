@@ -273,7 +273,12 @@ fx hvert kvartal.
 
 Log over restore-tests:
 
-- [ ] _(første test efter opsætningen)_
+- [x] 2026-11-17, standby pg01 (leder pg02, TL 4): restore fra full `20261117-013102F` + WAL
+      til T = `18:50:06.78+00`, 15 s for 216 MB. Markøren var der, `pg_is_in_recovery()` = `f`
+      efter promoveringen (`t` i de første sekunder, mens den promoverer), alle seks databaser,
+      7 brugere i `authentik_core_user` som på lederen. Loggen: `recovery stopping before commit
+      of transaction 325679` (DROP'et) og `selected new timeline ID: 5`. Repoet fik ingen
+      tidslinje 5 (`archive_mode=off` virker). Bestået
 
 ### 8.4 Restore af hele clusteret (katastrofe)
 
