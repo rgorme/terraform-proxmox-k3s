@@ -64,6 +64,10 @@ postgresql:
     - local all postgres peer
     - local all all scram-sha-256
     - host all all 127.0.0.1/32 scram-sha-256
+    # Patroni on a replica reads its own timeline over a replication connection
+    # to localhost; without this it logs a pg_hba error every loop. localhost
+    # tries ::1 first, but PostgreSQL only listens on IPv4, so 127.0.0.1 is enough.
+    - host replication {{ patroni_replication_user }} 127.0.0.1/32 scram-sha-256
 {% for h in groups['postgresql'] %}
     - host replication {{ patroni_replication_user }} {{ hostvars[h].ansible_host }}/32 scram-sha-256
 {% endfor %}
