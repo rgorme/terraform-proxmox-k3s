@@ -344,28 +344,34 @@ Trafikken er stadig ren HTTP: adgangskoden og Patronis token kan opsnappes af en
 på vejen (ARP-spoofing på LAN'et). Login lukker for tilfældige skrivninger, ikke for det.
 Næste trin er klient-TLS på etcd (`cacert`/`cert`/`key` i Patronis `etcd3`-sektion), se afsnit 7.
 
-- [ ] Tilføj til `ansible/secrets.yml` (`ansible-vault edit secrets.yml`):
+- [x] Tilføj til `ansible/secrets.yml` (`ansible-vault edit secrets.yml`):
       `postgresql_ha_etcd_root_password` og `postgresql_ha_etcd_password` (mindst 16 tegn)
-- [ ] Første kørsel uden selve switchen:
+- [x] Første kørsel uden selve switchen:
       `ansible-playbook setup-postgresql.yml --ask-vault-pass --skip-tags etcd_auth`.
       Forvent `changed` på "Configure Patroni" (begge noder) og "Mark this member as
       bootstrapped" (markøren får indholdet `new`), og ingen genstart af etcd
-- [ ] På begge noder: `grep -A1 username: /etc/patroni/config.yml` viser `patroni`, og
+- [x] På begge noder: `grep -A1 username: /etc/patroni/config.yml` viser `patroni`, og
       `journalctl -u patroni --since -5m` viser reload uden fejl.
       `patronictl -c /etc/patroni/config.yml list` viser stadig `Leader` og `Sync Standby`
-- [ ] Hav en terminal klar på pg01 med fortryd-kommandoen (virker inden for de 30 s):
+- [x] Hav en terminal klar på pg01 med fortryd-kommandoen (virker inden for de 30 s):
       `etcdctl --user root:<root-password> auth disable`
-- [ ] Slå login til: `ansible-playbook setup-postgresql.yml --ask-vault-pass --tags etcd_auth`.
+- [x] Slå login til: `ansible-playbook setup-postgresql.yml --ask-vault-pass --tags etcd_auth`.
       Det opretter `root` (rollen `root`), rollen `patroni` (readwrite på `/service/`),
       brugeren `patroni` og kører `auth enable`
-- [ ] Inden for 10 s: `journalctl -fu patroni` på begge noder. Patroni får én gang
+- [x] Inden for 10 s: `journalctl -fu patroni` på begge noder. Patroni får én gang
       `user name is empty`/`permission denied` fra etcd, logger ind igen og fortsætter.
       Bliver fejlene ved, så kør fortryd-kommandoen og find fejlen i `config.yml`
-- [ ] `patronictl -c /etc/patroni/config.yml list` (bruger samme login) viser uændret cluster.
+- [x] `patronictl -c /etc/patroni/config.yml list` (bruger samme login) viser uændret cluster.
       `etcdctl get /service/pg-homelab/leader` fejler uden `--user`; med
       `--user patroni:<password>` virker den, og `--user patroni:... member list` virker også
       (`member add/remove` kræver `root`)
-- [ ] Næste fulde kørsel af playbooken er `ok` hele vejen (`auth enable` springes over)
+- [x] Næste fulde kørsel af playbooken er `ok` hele vejen (`auth enable` springes over)
+
+Udført 2026-11-17 (leder pg02, TL 4). Første kørsel ændrede `config.yml` og genindlæste
+Patroni på begge noder, og markørerne fik `new`. etcd blev ikke genstartet. `auth enable`
+kl. 20:25:53 UTC: begge Patroni fik én `user name is empty`, loggede ind igen inden for 9 s,
+og der har ikke været auth-fejl siden. Ingen demotering. Den fulde kørsel bagefter ændrede
+intet (kun de gentagne rolle-tildelinger, som etcd ignorerer).
 
 Skift af adgangskode: `etcdctl --user root:... user passwd patroni`, opdatér `secrets.yml`
 og kør playbooken straks efter. Patronis token udløber ved skiftet, og lykkes det nye login
