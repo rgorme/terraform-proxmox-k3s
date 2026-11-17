@@ -17,6 +17,8 @@ bruger fortsat `192.168.1.60`, som bliver en VIP, der følger Patroni-lederen.
   synkron standby, så bekræftede commits går ikke tabt.
 - keepalived tjekker Patronis `/primary`-endpoint. Kun lederen holder VIP'en.
 - Ingen watchdog (LXC har ikke `/dev/watchdog`).
+- etcd kræver login: Patroni bruger brugeren `patroni`, der kun må læse og skrive under
+  `/service/`. `root` (medlemskab, brugere) ligger i `secrets.yml`. Se "Slå etcd-login til".
 
 Klienter: Authentik, PowerDNS (powerdns01/02) og PowerDNS-Admin. De peger alle på
 `192.168.1.60` og skal ikke ændres.
@@ -118,6 +120,7 @@ med `RuntimeDirectory=postgresql`, som er lagt ind på begge noder.
 - [ ] Efter en uges drift: slet LXC 200 (`pct destroy 200`). vzdump-backuppen fra trin 0 bliver liggende
 - [ ] Backup: HA er ikke backup. pgBackRest er sat op i Ansible, se trin 8
 - [ ] Grafana/alarmer: alarm på `patroni_primary` = 0 i hele clusteret og på replikerings-lag
+- [ ] etcd: klient-TLS, så Patronis login ikke går over ren HTTP (se "Slå etcd-login til")
 - [ ] Opdatér idétavlen
 
 ## 8. Backup med pgBackRest
@@ -318,3 +321,127 @@ klienter er nede undervejs. Stop dem som i trin 3, og brug break-glass til kubec
 1. `systemctl disable --now keepalived` på pg01 og pg02 (frigiver `.60`)
 2. `pct set 200 --onboot 1 && pct start 200` på prox02
 3. Genstart klienterne som i trin 5. Skrivninger lavet efter trin 3 findes kun i Patroni-clusteret
+
+---
+
+## Slå etcd-login til (på det kørende cluster)
+
+Uden login kan alle på `192.168.1.0/24` skrive i Patronis DCS, fx
+`postgresql.parameters.archive_command`, som kører som `postgres` på lederen. etcd lytter
+stadig på LAN-IP'en (Patroni på den anden node skal kunne nå den), men kræver nu bruger og
+adgangskode. `auth enable` gælder for hele clusteret med det samme, så rækkefølgen er:
+Patroni skal have sine legitimationsoplysninger **før** login slås til. Ellers mister
+Patroni DCS'en og lederen demoterer efter `ttl` (30 s).
+
+Playbooken gør det i den rigtige rækkefølge: etcd-rollen (ingen genstart af etcd, filen
+`/etc/default/etcd` er uændret), så Patroni-rollen (ny `config.yml` med `etcd3.username`
+og `password`, `reload` af Patroni, én node ad gangen), og til sidst et play med tagget
+`etcd_auth`, der opretter brugerne og slår login til. Det play nægter at slå login til, før
+`/etc/patroni/config.yml` på begge PostgreSQL-noder har brugernavnet (det læser filen på
+begge, også ved `--limit`).
+
+Trafikken er stadig ren HTTP: adgangskoden og Patronis token kan opsnappes af en, der sidder
+på vejen (ARP-spoofing på LAN'et). Login lukker for tilfældige skrivninger, ikke for det.
+Næste trin er klient-TLS på etcd (`cacert`/`cert`/`key` i Patronis `etcd3`-sektion), se afsnit 7.
+
+- [ ] Tilføj til `ansible/secrets.yml` (`ansible-vault edit secrets.yml`):
+      `postgresql_ha_etcd_root_password` og `postgresql_ha_etcd_password` (mindst 16 tegn)
+- [ ] Første kørsel uden selve switchen:
+      `ansible-playbook setup-postgresql.yml --ask-vault-pass --skip-tags etcd_auth`.
+      Forvent `changed` på "Configure Patroni" (begge noder) og "Mark this member as
+      bootstrapped" (markøren får indholdet `new`), og ingen genstart af etcd
+- [ ] På begge noder: `grep -A1 username: /etc/patroni/config.yml` viser `patroni`, og
+      `journalctl -u patroni --since -5m` viser reload uden fejl.
+      `patronictl -c /etc/patroni/config.yml list` viser stadig `Leader` og `Sync Standby`
+- [ ] Hav en terminal klar på pg01 med fortryd-kommandoen (virker inden for de 30 s):
+      `etcdctl --user root:<root-password> auth disable`
+- [ ] Slå login til: `ansible-playbook setup-postgresql.yml --ask-vault-pass --tags etcd_auth`.
+      Det opretter `root` (rollen `root`), rollen `patroni` (readwrite på `/service/`),
+      brugeren `patroni` og kører `auth enable`
+- [ ] Inden for 10 s: `journalctl -fu patroni` på begge noder. Patroni får én gang
+      `user name is empty`/`permission denied` fra etcd, logger ind igen og fortsætter.
+      Bliver fejlene ved, så kør fortryd-kommandoen og find fejlen i `config.yml`
+- [ ] `patronictl -c /etc/patroni/config.yml list` (bruger samme login) viser uændret cluster.
+      `etcdctl get /service/pg-homelab/leader` fejler uden `--user`; med
+      `--user patroni:<password>` virker den, og `--user patroni:... member list` virker også
+      (`member add/remove` kræver `root`)
+- [ ] Næste fulde kørsel af playbooken er `ok` hele vejen (`auth enable` springes over)
+
+Skift af adgangskode: `etcdctl --user root:... user passwd patroni`, opdatér `secrets.yml`
+og kør playbooken straks efter. Patronis token udløber ved skiftet, og lykkes det nye login
+ikke inden for 30 s, demoterer lederen (som et planlagt switchover, få sekunder for
+klienterne). Gør det i et vedligeholdelsesvindue.
+
+## Erstat en etcd-node
+
+Gælder pg-witness, og pg01/pg02 når en container genopbygges (fx ved skiftet til
+unprivileged, se nedenfor). En etcd-node, der genopbygges, er et nyt medlem: det gamle
+medlem skal fjernes fra clusteret, og det nye tilføjes, før etcd startes med
+`ETCD_INITIAL_CLUSTER_STATE=existing`. Starter den med `new`, nægter clusteret den.
+
+Rollen gør det selv, når markøren `/var/lib/etcd/.cluster-bootstrapped` mangler på hosten:
+den spørger de andre medlemmer (`member list`), fjerner en gammel post med hostens navn
+eller peer-URL, kører `member add` og skriver `existing` i markøren. Første gang alle tre
+bygges, svarer ingen peers, og alle tre starter med `new` som før. De to andre medlemmer skal
+være sunde: medlemsskift kræver quorum (2 af 3).
+
+Mangler markøren på et medlem, der faktisk kører i clusteret (slettet i hånden, eller
+`/var/lib/etcd` restoret fra en ældre backup), nægter rollen at slette dets datamappe: den
+sammenligner cluster-ID fra den lokale etcd med peerens. Genskab markøren
+(`echo new > /var/lib/etcd/.cluster-bootstrapped`), eller kør med `-e etcd_force_rejoin=true`,
+hvis medlemmet virkelig skal bygges om.
+
+- [ ] Byg containeren igen (Terraform, se "Skift til unprivileged containere") og fjern den
+      gamle host key: `ssh-keygen -R 192.168.1.59` (eller `.57`/`.58`)
+- [ ] På et af de andre medlemmer: `etcdctl --user root:... endpoint health --cluster` viser
+      to sunde og ét fejlende medlem. Fortsæt kun hvis de to er sunde
+- [ ] `ansible-playbook setup-postgresql.yml --ask-vault-pass` uden `--limit`: etcd- og
+      Patroni-rollerne er no-ops på de sunde noder, og pgbackrest-playet (afsnit 8) kræver alle
+      tre hosts for at udveksle SSH-nøgler med den nye. Forvent `changed` på
+      "Remove the old entry for this host" og "Add this host to the cluster"
+- [ ] `etcdctl --user root:... member list` viser tre startede medlemmer med nye ID for det
+      genopbyggede, og `endpoint health --cluster` er sund på alle tre
+- [ ] `patronictl -c /etc/patroni/config.yml list` er uændret (Patroni mærker ikke medlemsskiftet)
+
+Manuelt (hvis rollen fejler, fx uden quorum, eller etcd er installeret i hånden). På et sundt
+medlem, alle `etcdctl` med `--user root:<root-password>`:
+
+1. `etcdctl member list` og notér ID (hex) for det gamle medlem
+2. `etcdctl member remove <id>`
+3. `etcdctl member add pg-witness --peer-urls=http://192.168.1.59:2380` (navn og IP som i
+   `ansible/hosts`)
+4. På den nye node: `systemctl stop etcd && rm -rf /var/lib/etcd/default`, sæt
+   `ETCD_INITIAL_CLUSTER_STATE="existing"` i `/etc/default/etcd` (resten som på de andre,
+   `ETCD_INITIAL_CLUSTER` med alle tre), `systemctl start etcd`
+5. `echo existing > /var/lib/etcd/.cluster-bootstrapped`, så playbooken ikke rører den igen
+6. Tjek som ovenfor. Et medlem, der fejler mellem trin 2 og 3, efterlader clusteret med to
+   medlemmer; det er stadig sundt (quorum 2 af 2), men tåler ingen fejl, så gør trin 3 færdigt
+
+## Skift til unprivileged containere
+
+De tre containere blev oprettet privilegerede (providerens standard, `unprivileged` var ikke
+sat). Skiftet kræver, at containeren genskabes (Terraform: *must be replaced*), så det sker
+ved næste genopbygning, én node ad gangen. keepalived (VRRP og VIP'en på `eth0`) og Patroni
+kræver intet ekstra i en unprivileged container. `features { nesting = true }`, som systemd i
+Debian 12 skal bruge til sine egne mount-namespaces, er allerede sat på alle tre (8.1) og følger
+med, når containeren genskabes.
+
+Rækkefølge: standby'en først, lad den klone, switchover, så den anden. pg-witness kan tages
+når som helst (etcd tåler, at ét medlem er væk), men ikke samtidig med en PostgreSQL-node.
+
+- [ ] Vælg node og sæt `unprivileged = true` på **kun den** i `terraform/lxc/main.tf`.
+      `terraform plan` må kun vise den ene container som *must be replaced*; de to andre
+      *No changes*
+- [ ] PostgreSQL-node: tjek at den er standby (`patronictl list`), ellers
+      `patronictl switchover pg-homelab --leader <den> --candidate <den anden> --force`
+- [ ] `terraform apply`. Containeren slettes og genskabes med samme VMID og IP (datamappe,
+      etcd-data og host key er væk)
+- [ ] `ssh-keygen -R <ip>`, og `ansible-playbook setup-postgresql.yml --ask-vault-pass`
+      (uden `--limit`, så Patroni-playet kører med `serial: 1`). etcd joiner som beskrevet i
+      "Erstat en etcd-node", og Patroni kloner fra lederen (`pg_basebackup`) og bliver
+      `Sync Standby` med lag 0. Login på etcd er allerede slået til og springes over
+- [ ] `pct config <vmid> | grep -E 'unprivileged|features'` på Proxmox-noden viser
+      `unprivileged: 1` og `nesting=1`. `.60` ligger på lederen, og `systemctl status keepalived`
+      på den genopbyggede node er uden fejl
+- [ ] Switchover til den genopbyggede node og gentag med den anden. Derefter pg-witness
+- [ ] Når alle tre er unprivileged: `terraform plan` viser *No changes*

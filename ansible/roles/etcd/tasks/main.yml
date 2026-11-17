@@ -1,4 +1,14 @@
 ---
+- name: Validate the etcd credentials
+  ansible.builtin.assert:
+    that:
+      - postgresql_ha_etcd_root_password | default('') | length >= 16
+      - postgresql_ha_etcd_password | default('') | length >= 16
+    fail_msg: >-
+      Set postgresql_ha_etcd_root_password and postgresql_ha_etcd_password
+      (16+ characters) in ansible/secrets.yml.
+  no_log: true
+
 - name: Install etcd
   ansible.builtin.apt:
     update_cache: true
@@ -10,22 +20,26 @@
 
 - name: Check whether this member has joined the cluster
   ansible.builtin.stat:
-    path: /var/lib/etcd/.cluster-bootstrapped
+    path: "{{ etcd_bootstrap_marker }}"
   register: etcd_bootstrapped
 
-# The Debian package starts a single-node etcd on install. Its data directory
-# would make this member ignore ETCD_INITIAL_CLUSTER, so remove it once.
-- name: Stop the single-node etcd started by the package
-  ansible.builtin.systemd_service:
-    name: etcd
-    state: stopped
+- name: Bootstrap or join the cluster
+  ansible.builtin.include_tasks: join.yml
   when: not etcd_bootstrapped.stat.exists
 
-- name: Remove the single-node etcd data
-  ansible.builtin.file:
-    path: "{{ etcd_data_dir }}"
-    state: absent
-  when: not etcd_bootstrapped.stat.exists
+- name: Read how this member joined
+  ansible.builtin.slurp:
+    src: "{{ etcd_bootstrap_marker }}"
+  register: etcd_marker
+  when: etcd_bootstrapped.stat.exists
+
+# Markers written before the state was recorded are empty; those members
+# bootstrapped with "new". The value is ignored once the data directory exists,
+# but a changed line would restart the member.
+- name: Keep the initial cluster state of a joined member
+  ansible.builtin.set_fact:
+    etcd_initial_cluster_state: "{{ (etcd_marker.content | b64decode | trim) or 'new' }}"
+  when: etcd_bootstrapped.stat.exists
 
 - name: Configure etcd
   ansible.builtin.template:
@@ -45,11 +59,17 @@
     enabled: true
     no_block: true
 
+# Also waits for the member to serve requests, which needs quorum.
+- name: Wait for this member and find out whether it requires credentials
+  ansible.builtin.include_tasks: auth-status.yml
+  vars:
+    etcd_probe_endpoint: "{{ etcd_endpoint }}"
+    etcd_probe_retries: 30
+
 - name: Wait for the etcd cluster to become healthy
   ansible.builtin.command:
-    cmd: etcdctl --endpoints=http://127.0.0.1:{{ etcd_client_port }} endpoint health
-  environment:
-    ETCDCTL_API: "3"
+    cmd: etcdctl --endpoints={{ etcd_endpoint }} endpoint health
+  environment: "{{ etcd_ctl_env }}"
   register: etcd_health
   retries: 30
   delay: 5
@@ -57,11 +77,9 @@
   changed_when: false
 
 - name: Mark this member as bootstrapped
-  ansible.builtin.file:
-    path: /var/lib/etcd/.cluster-bootstrapped
-    state: touch
+  ansible.builtin.copy:
+    dest: "{{ etcd_bootstrap_marker }}"
+    content: "{{ etcd_initial_cluster_state }}\n"
     owner: root
     group: root
     mode: '0644'
-    modification_time: preserve
-    access_time: preserve

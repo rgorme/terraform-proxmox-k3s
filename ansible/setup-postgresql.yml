@@ -4,6 +4,8 @@
   hosts: etcd
   become: true
   gather_facts: true
+  vars_files:
+    - secrets.yml
   roles:
     - etcd
 
@@ -33,3 +35,20 @@
     - pgdg
     - pgbackrest
   tags: [pgbackrest]
+
+# etcd authentication is turned on last, once Patroni on both nodes holds its
+# credentials (the play above reloads it). It applies to the whole cluster at
+# once; a Patroni without credentials would lose the DCS and demote after ttl.
+# --skip-tags etcd_auth rolls out everything but the switch (see the runbook).
+- name: Enable etcd authentication
+  hosts: etcd
+  become: true
+  gather_facts: false
+  vars_files:
+    - secrets.yml
+  tags: [etcd_auth]
+  tasks:
+    - name: Create the etcd users and enable authentication
+      ansible.builtin.include_role:
+        name: etcd
+        tasks_from: auth
