@@ -29,10 +29,13 @@ pgbackrest_archive_push_queue_max: 4GiB
 # Applied to Patroni's dynamic (DCS) configuration through the patroni role.
 # archive_mode needs a PostgreSQL restart: patronictl restart <cluster> --pending.
 #
-# "always" rather than "on": the standby archives the WAL it streams too, so
-# the WAL a dead leader still had in its async spool is in the repository all
-# the same (synchronous replication means the standby has it). pgBackRest
-# accepts a segment pushed twice when the checksums match.
+# "on", not "always": pgBackRest's backup and check commands refuse
+# archive_mode=always ("[067] archive_mode=always not supported"), so only the
+# primary archives. The cost: WAL a dead leader still had in its async spool
+# never reaches the repository, and the promoted standby does not archive the
+# old-timeline segments it streamed. PITR into the minutes before a failover
+# can therefore have a gap; anything after the failover is covered. Take a
+# full backup after a failover (runbook 8.4) to start a clean chain.
 pgbackrest_patroni_parameters:
-  archive_mode: always
+  archive_mode: "on"
   archive_command: "pgbackrest --stanza={{ pgbackrest_stanza }} archive-push %p"

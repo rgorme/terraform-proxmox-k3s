@@ -134,10 +134,12 @@ Point-in-time recovery (PITR) for hele clusteret, uafhængigt af hvem der er led
 - Backuppen kører på pg-witness, og pgBackRest finder selv primary'en blandt
   `pg1-host` (pg01) og `pg2-host` (pg02). Efter en failover rammer næste backup den nye leder.
   Er der ingen primary, fejler kørslen, og `pgbackrest-backup@full.service` står som failed.
-- Begge noder arkiverer (`archive_mode=always` i Patroni-DCS): standby'en skubber også den
-  WAL, den streamer. Dør lederen med WAL i sin async-spool, ligger den samme WAL derfor
-  allerede i repoet fra standby'en (synkron replikering). pgBackRest accepterer et segment,
-  der skubbes to gange med samme checksum. Tidslinjeskift ved failover håndteres af pgBackRest.
+- Kun lederen arkiverer (`archive_mode=on` i Patroni-DCS). `always` ville også lade standby'en
+  arkivere, men pgBackRests `backup` og `check` afviser det (`[067] archive_mode=always not
+  supported`). Prisen: dør lederen med WAL i sin async-spool, eller har standby'en streamet
+  segmenter, som lederen ikke nåede at arkivere, kommer de aldrig i repoet. PITR til
+  minutterne lige før en failover kan derfor have et hul. Alt efter failoveren er dækket,
+  og tidslinjeskiftet håndteres af pgBackRest. Tag en full-backup efter en failover.
 - Patroni-parametre, der ændres i Ansible (`patroni_postgresql_parameters` og pgBackRests
   `archive_*`), PATCHes ind i den dynamiske config via REST API'et på den første node i
   `postgresql`, der er med i kørslen. `bootstrap.dcs` gælder kun ved første bootstrap.
@@ -174,24 +176,33 @@ Point-in-time recovery (PITR) for hele clusteret, uafhængigt af hvem der er led
 
 ### 8.1 Opsætning
 
-- [ ] Udvid pg-witness' disk fra 4 til 32 GB: `cd terraform/lxc && terraform plan`. Planen må kun
+- [x] Udvid pg-witness' disk fra 4 til 32 GB: `cd terraform/lxc && terraform plan`. Planen må kun
       vise `~ size = 4 -> 32` på `postgresql_ha["pg-witness"]` som *update in-place*. Står der
       *must be replaced*, så stop. Derefter `terraform apply`, og tjek `df -h /` på pg-witness
-- [ ] `cd ansible && ansible-playbook setup-postgresql.yml --ask-vault-pass --tags pgbackrest`.
+- [x] Slå `nesting` til på alle tre containere (2026-11-17). Uden den kan systemd ikke lave
+      mount-namespaces i de privilegerede containere: `systemd-logind` starter aldrig, hvert
+      SSH-login venter 25 s i `pam_systemd`, og pgBackRests `check`/`backup` rammer
+      60-sekunders WAL-timeouten. Terraform-tokenet må ikke ændre features på en privilegeret
+      container (kun `root@pam`), så det gøres på hosten og spejles i `main.tf`:
+      `pct set <vmid> --features nesting=1`, derefter genstart én ad gangen: pg-witness,
+      standby'en, `patronictl switchover --leader <leder> --candidate <standby>`, den gamle leder.
+      Tjek bagefter `systemctl is-active systemd-logind` og at `ssh postgres@<node> true`
+      fra pg-witness tager under et sekund
+- [x] `cd ansible && ansible-playbook setup-postgresql.yml --ask-vault-pass --tags pgbackrest`.
       Rollen installerer pgBackRest fra PGDG på alle tre, udveksler SSH-nøgler, kører
       `stanza-create` på pg-witness, slår timerne til og PATCHer Patronis dynamiske config
-      med `archive_mode: always` og `archive_command` (samme som `patronictl edit-config`;
+      med `archive_mode: on` og `archive_command` (samme som `patronictl edit-config`;
       `bootstrap.dcs` gælder kun ved første bootstrap)
-- [ ] `patronictl -c /etc/patroni/config.yml show-config` viser `archive_mode` og `archive_command`
-- [ ] `patronictl -c /etc/patroni/config.yml list` viser `Pending restart` på begge noder.
+- [x] `patronictl -c /etc/patroni/config.yml show-config` viser `archive_mode` og `archive_command`
+- [x] `patronictl -c /etc/patroni/config.yml list` viser `Pending restart` på begge noder.
       `archive_mode` kræver genstart: `patronictl -c /etc/patroni/config.yml restart pg-homelab --pending`.
       Genstart af lederen giver et par sekunders afbrydelse (Authentik genforbinder)
-- [ ] På begge noder: `su postgres -c "psql -Atc 'show archive_mode'"` giver `always`
-- [ ] På pg-witness: `runuser -u pgbackrest -- pgbackrest --stanza=pg-homelab check`
+- [x] På begge noder: `su postgres -c "psql -Atc 'show archive_mode'"` giver `on`
+- [x] På pg-witness: `runuser -u pgbackrest -- pgbackrest --stanza=pg-homelab check`
       (tvinger et WAL-skift og venter på, at det er arkiveret)
-- [ ] Første full-backup med det samme: `systemctl start pgbackrest-backup@full.service`,
+- [x] Første full-backup med det samme: `systemctl start pgbackrest-backup@full.service`,
       derefter `journalctl -u pgbackrest-backup@full.service` uden fejl
-- [ ] `systemctl list-timers 'pgbackrest-*'` viser begge timere med næste kørsel
+- [x] `systemctl list-timers 'pgbackrest-*'` viser begge timere med næste kørsel
 
 Køres playbooken igen, sker der intet, når DCS-værdierne allerede er sat. Er clusteret
 blevet genskabt (fx efter `patronictl remove`, se 8.4), sætter playbooken dem igen.
