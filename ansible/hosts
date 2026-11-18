@@ -19,6 +19,9 @@ pg02 ansible_host=192.168.1.58 ansible_user=root proxmox_node=prox03
 [etcd_witness]
 pg-witness ansible_host=192.168.1.59 ansible_user=root proxmox_node=prox01
 
+[soc_agent]
+soc-agent ansible_host=192.168.1.63 ansible_user=root proxmox_node=prox03
+
 [etcd:children]
 postgresql
 etcd_witness
