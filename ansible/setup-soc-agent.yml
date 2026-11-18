@@ -1,0 +1,7 @@
+---
+- name: Prepare the SOC/ops agent container
+  hosts: soc_agent
+  become: true
+  gather_facts: true
+  roles:
+    - soc_agent

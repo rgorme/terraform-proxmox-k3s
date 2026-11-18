@@ -1,0 +1,44 @@
+---
+# Baseline for the SOC/ops agent container. The agent itself (code, systemd
+# timer, credentials) comes in a later step; this only prepares the host.
+- name: Install packages for the agent runtime
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    name:
+      - ca-certificates
+      - curl
+      - git
+      - python3
+      - python3-venv
+      - unattended-upgrades
+    state: present
+
+# The container is reachable only from the LAN, but it reads attacker-controlled
+# input (logs, CVE texts), so security updates go in without waiting for us.
+- name: Enable unattended security upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+    mode: "0644"
+
+# The agent runs as its own unprivileged user, never as root.
+- name: Create the agent user
+  ansible.builtin.user:
+    name: soc-agent
+    system: true
+    shell: /usr/sbin/nologin
+    home: /opt/soc-agent
+    create_home: true
+
+# Credentials (Grafana, GitHub, Anthropic) will live here, readable only by
+# the agent user.
+- name: Create the credentials directory
+  ansible.builtin.file:
+    path: /etc/soc-agent
+    state: directory
+    owner: root
+    group: soc-agent
+    mode: "0750"

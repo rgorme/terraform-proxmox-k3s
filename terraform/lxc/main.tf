@@ -230,3 +230,72 @@ resource "proxmox_virtual_environment_container" "postgresql_ha" {
 
   start_on_boot = true
 }
+
+# SOC/ops agent (Claude Agent SDK). Runs outside k3s on purpose: it watches the
+# cluster, so it must keep working when the cluster is down, and it must never
+# be able to upgrade itself. It only reads (Grafana/Prometheus/Loki, GitHub);
+# everything it may change goes through narrow, typed tools.
+#
+# prox03 has the most free memory. 192.168.1.63 is the last static address
+# below the switch's DHCP pool (192.168.1.64-222).
+#
+# Unprivileged from the start (unlike the PostgreSQL containers), since it
+# reads attacker-controlled input (logs, CVE texts). Nesting lets systemd set
+# up mount namespaces, see postgresql_ha above.
+resource "proxmox_virtual_environment_container" "soc_agent" {
+  node_name = "prox03"
+  vm_id     = 206
+
+  description = "SOC/ops agent (Claude Agent SDK)"
+  tags        = ["soc"]
+
+  unprivileged = true
+
+  cpu {
+    cores = 1
+  }
+
+  memory {
+    dedicated = 1024
+  }
+
+  disk {
+    datastore_id = "zvmdata"
+    size         = 16
+  }
+
+  initialization {
+    hostname = "soc-agent"
+
+    user_account {
+      keys = [var.ssh_public_key]
+    }
+
+    ip_config {
+      ipv4 {
+        address = "192.168.1.63/24"
+        gateway = "192.168.1.1"
+      }
+    }
+
+    dns {
+      servers = ["192.168.1.61", "192.168.1.62"]
+    }
+  }
+
+  network_interface {
+    name   = "eth0"
+    bridge = "vmbr0"
+  }
+
+  operating_system {
+    template_file_id = "local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst"
+    type             = "debian"
+  }
+
+  features {
+    nesting = true
+  }
+
+  start_on_boot = true
+}
