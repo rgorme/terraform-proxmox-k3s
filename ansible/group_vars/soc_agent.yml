@@ -3,4 +3,4 @@
 # "anthropic" application (issuer https://authentik.gormsboel.dk/application/o/anthropic/,
 # audience "anthropic", sub "soc-agent").
 soc_agent_anthropic_federation_rule_id: fdrl_01SoufofV5wk6PX3Lsi9M49x
-soc_agent_anthropic_organization_id: REPLACE_WITH_ORGANIZATION_UUID
+soc_agent_anthropic_organization_id: 41c474ef-4b51-4927-9bd9-ad807b83ab2b
