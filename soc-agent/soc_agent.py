@@ -2,8 +2,9 @@
 
 One run:
   1. Pings healthchecks.io /start.
-  2. Gets a short-lived JWT from Authentik (client_credentials, service account
-     soc-agent) and uses it as a Grafana Viewer.
+  2. Gets a short-lived JWT from Authentik's grafana provider (client_credentials
+     as service account soc-agent, group "Grafana Viewers") and uses it as a
+     Grafana Viewer.
   3. Loads the "SOC Overview" dashboard. Its panels are the contract: the model
      can only run those queries, never its own PromQL/LogQL.
   4. Reads the posture tiles and decides, with fixed rules, whether the run
@@ -36,6 +37,9 @@ from anthropic import beta_tool
 AUTHENTIK = "https://authentik.gormsboel.dk"
 GRAFANA = "https://grafana.gormsboel.dk"
 DASHBOARD_UID = "soc-overview"
+# The grafana application's client id in Authentik. Not a secret: it appears
+# in every browser login redirect.
+GRAFANA_CLIENT_ID = "2NABGna7njFVbp1PDJ0dcdQicZcNy7wkzrvwDQ2F"
 GITHUB_REPO = "rgorme/gitops"
 DIGEST_LABEL = "soc-digest"
 
@@ -94,10 +98,10 @@ class Grafana:
     def __init__(self) -> None:
         form = urllib.parse.urlencode({
             "grant_type": "client_credentials",
-            "client_id": "soc-agent",
+            "client_id": GRAFANA_CLIENT_ID,
             "username": "soc-agent",
             "password": env("SOC_AGENT_APP_PASSWORD"),
-            "scope": "openid profile",
+            "scope": "openid profile email",
         })
         token = json.loads(http(
             "POST", f"{AUTHENTIK}/application/o/token/",
