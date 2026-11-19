@@ -1,0 +1,6 @@
+# Claude API access for the SOC agent through Workload Identity Federation.
+# Not secrets: they name the rule at Anthropic that trusts Authentik's
+# "anthropic" application (issuer https://authentik.gormsboel.dk/application/o/anthropic/,
+# audience "anthropic", preferred_username "soc-agent").
+soc_agent_anthropic_federation_rule_id: REPLACE_WITH_fdrl_ID
+soc_agent_anthropic_organization_id: REPLACE_WITH_ORGANIZATION_UUID

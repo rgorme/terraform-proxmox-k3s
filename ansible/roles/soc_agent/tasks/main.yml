@@ -65,6 +65,13 @@
     virtualenv_command: python3 -m venv
   when: soc_agent_files is changed
 
+- name: Check that the Anthropic federation ids are filled in
+  ansible.builtin.assert:
+    that:
+      - soc_agent_anthropic_federation_rule_id is match('^fdrl_')
+      - soc_agent_anthropic_organization_id is match('^[0-9a-f-]{36}$')
+    fail_msg: Set the federation rule and organization ids in group_vars/soc_agent.yml.
+
 - name: Write the agent's credentials
   ansible.builtin.template:
     src: env.j2

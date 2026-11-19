@@ -9,6 +9,9 @@ One run:
   3. Reads the posture tiles and decides, with fixed rules, whether the run
      escalates to the more capable model.
   4. Lets the model investigate with read-only tools and write the digest.
+     Claude is reached without a static key: a token from Authentik's
+     "anthropic" application is exchanged through Workload Identity
+     Federation by the Anthropic SDK.
   5. Posts the digest as a GitHub issue in gitops (label soc-digest). A run
      that breaks posts a failure issue instead (label soc-agent-failure).
      GitHub's issue notifications are the alerting channel, and the issues
@@ -40,6 +43,9 @@ DASHBOARD_UID = "soc-overview"
 # The grafana application's client id in Authentik. Not a secret: it appears
 # in every browser login redirect.
 GRAFANA_CLIENT_ID = "2NABGna7njFVbp1PDJ0dcdQicZcNy7wkzrvwDQ2F"
+# The "anthropic" application in Authentik; its tokens are exchanged for
+# Claude API access (Workload Identity Federation, audience "anthropic").
+ANTHROPIC_CLIENT_ID = "anthropic"
 GITHUB_REPO = "rgorme/gitops"
 DIGEST_LABEL = "soc-digest"
 FAILURE_LABEL = "soc-agent-failure"
@@ -87,20 +93,43 @@ def http(method: str, url: str, *, headers=None, data=None, timeout=30) -> bytes
 # ---------------------------------------------------------------- Grafana
 
 
+def authentik_token(client_id: str) -> str:
+    """A fresh JWT for one Authentik application (client_credentials, app password).
+
+    Each carries a jti, so Anthropic accepts it for one exchange only; fetch a
+    new one for every use.
+    """
+    form = urllib.parse.urlencode({
+        "grant_type": "client_credentials",
+        "client_id": client_id,
+        "username": "soc-agent",
+        "password": env("SOC_AGENT_APP_PASSWORD"),
+        "scope": "openid profile email",
+    })
+    return json.loads(http(
+        "POST", f"{AUTHENTIK}/application/o/token/",
+        headers={"Content-Type": "application/x-www-form-urlencoded"}, data=form,
+    ))["access_token"]
+
+
+def claude_client() -> anthropic.Anthropic:
+    """Claude via Workload Identity Federation: no API key on this host.
+
+    The SDK exchanges the Authentik token at Anthropic, using the rule and
+    organization in ANTHROPIC_FEDERATION_RULE_ID / ANTHROPIC_ORGANIZATION_ID.
+    An API key or auth token in the environment would win, so they must not be set.
+    """
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE"):
+        os.environ.pop(name, None)
+    env("ANTHROPIC_FEDERATION_RULE_ID")
+    env("ANTHROPIC_ORGANIZATION_ID")
+    os.environ["ANTHROPIC_IDENTITY_TOKEN"] = authentik_token(ANTHROPIC_CLIENT_ID)
+    return anthropic.Anthropic(max_retries=4)
+
+
 class Grafana:
     def __init__(self) -> None:
-        form = urllib.parse.urlencode({
-            "grant_type": "client_credentials",
-            "client_id": GRAFANA_CLIENT_ID,
-            "username": "soc-agent",
-            "password": env("SOC_AGENT_APP_PASSWORD"),
-            "scope": "openid profile email",
-        })
-        token = json.loads(http(
-            "POST", f"{AUTHENTIK}/application/o/token/",
-            headers={"Content-Type": "application/x-www-form-urlencoded"}, data=form,
-        ))
-        self.headers = {"X-JWT-Assertion": token["access_token"]}
+        self.headers = {"X-JWT-Assertion": authentik_token(GRAFANA_CLIENT_ID)}
 
     def get(self, path: str):
         return json.loads(http("GET", GRAFANA + path, headers=self.headers))
@@ -299,7 +328,7 @@ def main() -> int:
         model = ESCALATION_MODEL if breaches else ROUTINE_MODEL
         print(f"posture={posture} breaches={breaches} model={model}")
 
-        client = anthropic.Anthropic(max_retries=4)
+        client = claude_client()
         today = dt.date.today().isoformat()
         prompt = (
             f"Today is {today}. Posture tiles (last 24h): "
