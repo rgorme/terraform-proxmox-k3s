@@ -36,6 +36,7 @@ import urllib.request
 
 import anthropic
 from anthropic import beta_tool
+from anthropic.lib.credentials import WorkloadIdentityCredentials
 
 AUTHENTIK = "https://authentik.gormsboel.dk"
 GRAFANA = "https://grafana.gormsboel.dk"
@@ -96,8 +97,8 @@ def http(method: str, url: str, *, headers=None, data=None, timeout=30) -> bytes
 def authentik_token(client_id: str) -> str:
     """A fresh JWT for one Authentik application (client_credentials, app password).
 
-    Each carries a jti, so Anthropic accepts it for one exchange only; fetch a
-    new one for every use.
+    Each carries a jti, so Anthropic accepts it for one exchange only; this is
+    called again for every exchange.
     """
     form = urllib.parse.urlencode({
         "grant_type": "client_credentials",
@@ -115,16 +116,21 @@ def authentik_token(client_id: str) -> str:
 def claude_client() -> anthropic.Anthropic:
     """Claude via Workload Identity Federation: no API key on this host.
 
-    The SDK exchanges the Authentik token at Anthropic, using the rule and
-    organization in ANTHROPIC_FEDERATION_RULE_ID / ANTHROPIC_ORGANIZATION_ID.
-    An API key or auth token in the environment would win, so they must not be set.
+    The SDK exchanges an Authentik token at Anthropic under the rule in
+    ANTHROPIC_FEDERATION_RULE_ID. It asks the provider below for a fresh token
+    on every exchange, including the refresh when Anthropic's short-lived
+    access token runs out, so single-use jti and the 10 minute Authentik token
+    never cut a long run short. Passing credentials= also keeps any API key in
+    the environment from being used.
     """
-    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE"):
-        os.environ.pop(name, None)
-    env("ANTHROPIC_FEDERATION_RULE_ID")
-    env("ANTHROPIC_ORGANIZATION_ID")
-    os.environ["ANTHROPIC_IDENTITY_TOKEN"] = authentik_token(ANTHROPIC_CLIENT_ID)
-    return anthropic.Anthropic(max_retries=4)
+    return anthropic.Anthropic(
+        max_retries=4,
+        credentials=WorkloadIdentityCredentials(
+            identity_token_provider=lambda: authentik_token(ANTHROPIC_CLIENT_ID),
+            federation_rule_id=env("ANTHROPIC_FEDERATION_RULE_ID"),
+            organization_id=env("ANTHROPIC_ORGANIZATION_ID"),
+        ),
+    )
 
 
 class Grafana:
