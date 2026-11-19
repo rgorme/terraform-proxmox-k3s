@@ -1,6 +1,6 @@
 ---
-# Baseline for the SOC/ops agent container. The agent itself (code, systemd
-# timer, credentials) comes in a later step; this only prepares the host.
+# SOC/ops agent container: host baseline, then the agent (code, venv,
+# credentials, systemd timer).
 - name: Install packages for the agent runtime
   ansible.builtin.apt:
     update_cache: true
@@ -42,3 +42,51 @@
     owner: root
     group: soc-agent
     mode: "0750"
+
+# ---------------------------------------------------------------- the agent
+
+- name: Copy the agent and its requirements
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../soc-agent/{{ item }}"
+    dest: /opt/soc-agent/{{ item }}
+    owner: root
+    group: soc-agent
+    mode: "0644"
+  loop:
+    - soc_agent.py
+    - requirements.txt
+  register: soc_agent_files
+
+# Owned by root, so the agent cannot change its own code or dependencies.
+- name: Install the agent's Python dependencies
+  ansible.builtin.pip:
+    requirements: /opt/soc-agent/requirements.txt
+    virtualenv: /opt/soc-agent/venv
+    virtualenv_command: python3 -m venv
+  when: soc_agent_files is changed
+
+- name: Write the agent's credentials
+  ansible.builtin.template:
+    src: env.j2
+    dest: /etc/soc-agent/env
+    owner: root
+    group: soc-agent
+    mode: "0640"
+  no_log: true
+
+- name: Install the systemd service and daily timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    mode: "0644"
+  loop:
+    - soc-agent.service
+    - soc-agent.timer
+  notify: Reload systemd
+
+- name: Enable the daily timer
+  ansible.builtin.systemd_service:
+    name: soc-agent.timer
+    enabled: true
+    state: started
+    daemon_reload: true
