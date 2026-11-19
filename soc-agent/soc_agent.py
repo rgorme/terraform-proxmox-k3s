@@ -1,22 +1,22 @@
 """SOC/ops agent, step 1: a read-only daily digest.
 
 One run:
-  1. Pings healthchecks.io /start.
-  2. Gets a short-lived JWT from Authentik's grafana provider (client_credentials
+  1. Gets a short-lived JWT from Authentik's grafana provider (client_credentials
      as service account soc-agent, group "Grafana Viewers") and uses it as a
      Grafana Viewer.
-  3. Loads the "SOC Overview" dashboard. Its panels are the contract: the model
+  2. Loads the "SOC Overview" dashboard. Its panels are the contract: the model
      can only run those queries, never its own PromQL/LogQL.
-  4. Reads the posture tiles and decides, with fixed rules, whether the run
+  3. Reads the posture tiles and decides, with fixed rules, whether the run
      escalates to the more capable model.
-  5. Lets the model investigate with read-only tools and write the digest.
-  6. Posts the digest as a GitHub issue in gitops, and pings healthchecks.io:
-     success when all is well, /fail when the digest says ACTION or the run
-     breaks, so the phone hears about it.
+  4. Lets the model investigate with read-only tools and write the digest.
+  5. Posts the digest as a GitHub issue in gitops (label soc-digest). A run
+     that breaks posts a failure issue instead (label soc-agent-failure).
+     GitHub's issue notifications are the alerting channel, and the issues
+     are what later steps of the agent will pick up and fix.
 
 Everything the tools return (log lines, PR texts) is data an attacker may
 control. The model has no tool that changes anything; only this program
-writes, and only the issue and the ping.
+writes, and only issues.
 """
 
 from __future__ import annotations
@@ -42,6 +42,7 @@ DASHBOARD_UID = "soc-overview"
 GRAFANA_CLIENT_ID = "2NABGna7njFVbp1PDJ0dcdQicZcNy7wkzrvwDQ2F"
 GITHUB_REPO = "rgorme/gitops"
 DIGEST_LABEL = "soc-digest"
+FAILURE_LABEL = "soc-agent-failure"
 
 ROUTINE_MODEL = "claude-sonnet-5-5"
 ESCALATION_MODEL = "claude-fable-5-2"
@@ -81,14 +82,6 @@ def http(method: str, url: str, *, headers=None, data=None, timeout=30) -> bytes
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
-
-
-def ping(suffix: str = "", body: str = "") -> None:
-    """healthchecks.io; never lets a ping failure break the run."""
-    try:
-        http("POST", env("SOC_AGENT_HEALTHCHECKS_URL") + suffix, data=body[:10000], timeout=10)
-    except Exception as exc:  # noqa: BLE001
-        print(f"healthchecks ping {suffix or 'success'} failed: {exc}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------- Grafana
@@ -201,6 +194,29 @@ def defang(text: str) -> str:
     return re.sub(r"!\[", "[", text)
 
 
+def report_failure(err: str) -> None:
+    """Open (or comment on) one failure issue, so a broken run is not silent.
+
+    If GitHub itself is unreachable this cannot report; the run still exits
+    non-zero, so systemd marks soc-agent.service failed.
+    """
+    try:
+        today = dt.date.today().isoformat()
+        tail = "```\n" + defang(err[-3000:]) + "\n```"
+        open_issues = github("GET", f"/repos/{GITHUB_REPO}/issues?state=open&labels={FAILURE_LABEL}&per_page=1")
+        if open_issues:
+            github("POST", f"/repos/{GITHUB_REPO}/issues/{open_issues[0]['number']}/comments",
+                   {"body": f"Failed again on {today}.\n\n{tail}"})
+        else:
+            github("POST", f"/repos/{GITHUB_REPO}/issues", {
+                "title": f"SOC agent run failed ({today})",
+                "body": f"The daily SOC run on soc-agent (192.168.1.63) failed.\n\n{tail}",
+                "labels": [FAILURE_LABEL],
+            })
+    except Exception as exc:  # noqa: BLE001
+        print(f"could not report the failure to GitHub: {exc}", file=sys.stderr)
+
+
 # ---------------------------------------------------------------- agent
 
 
@@ -270,7 +286,6 @@ def build_tools(grafana: Grafana, panels: dict[str, dict]):
 
 def main() -> int:
     dry_run = "--dry-run" in sys.argv
-    ping("/start")
     try:
         grafana = Grafana()
         dash = grafana.get(f"/api/dashboards/uid/{DASHBOARD_UID}")["dashboard"]
@@ -317,19 +332,17 @@ def main() -> int:
 
         if dry_run:
             print(title + "\n\n" + body)
-            ping("", f"dry run {title}")
             return 0
 
         issue = github("POST", f"/repos/{GITHUB_REPO}/issues",
                        {"title": title, "body": body, "labels": [DIGEST_LABEL]})
-        summary = f"{title}\n{issue['html_url']}"
-        print(summary)
-        ping("/fail" if status == "ACTION" else "", summary)
+        print(f"{title}\n{issue['html_url']}")
         return 0
     except Exception:
         err = traceback.format_exc()
         print(err, file=sys.stderr)
-        ping("/fail", "soc-agent run failed\n" + err[-3000:])
+        if not dry_run:
+            report_failure(err)
         return 1
 
 
