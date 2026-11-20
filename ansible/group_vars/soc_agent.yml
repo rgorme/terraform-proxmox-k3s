@@ -8,4 +8,4 @@ soc_agent_anthropic_organization_id: 41c474ef-4b51-4927-9bd9-ad807b83ab2b
 # GitHub App the agent acts as (soc-agent[bot]): Issues read/write, Pull
 # requests and Contents read, installed on rgorme/gitops only. Not a secret;
 # the private key is in secrets.yml.
-soc_agent_github_app_client_id: REPLACE_WITH_Iv_CLIENT_ID
+soc_agent_github_app_client_id: Iv23liF74NXF4eJqcyyT
