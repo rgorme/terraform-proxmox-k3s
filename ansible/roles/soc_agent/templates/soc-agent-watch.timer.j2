@@ -1,0 +1,11 @@
+[Unit]
+Description=Check deploys after gitops merges every 15 minutes
+
+[Timer]
+# No Claude and no Grafana login unless a merge touched apps/ or charts/ in
+# the last 3 hours, so a quiet quarter costs one GitHub API call.
+OnCalendar=*:0/15
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

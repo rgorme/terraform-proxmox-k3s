@@ -1,0 +1,32 @@
+[Unit]
+Description=SOC/ops agent post-merge health check
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=soc-agent
+Group=soc-agent
+EnvironmentFile=/etc/soc-agent/env
+# Dates in issue titles follow Danish time, not the container's UTC.
+Environment=TZ=Europe/Copenhagen
+ExecStart=/opt/soc-agent/venv/bin/python -I /opt/soc-agent/soc_agent.py --watch
+TimeoutStartSec=10min
+# Remembers which merges looked unhealthy at the last check (watch.json).
+StateDirectory=soc-agent
+StateDirectoryMode=0700
+
+# It reads attacker-controlled input, so it gets as little as possible.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+SystemCallArchitectures=native
