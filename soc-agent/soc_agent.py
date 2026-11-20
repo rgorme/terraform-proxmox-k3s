@@ -324,7 +324,7 @@ Findings:
 - fixable is true only when a change to files in the gitops repository (apps/ or charts/) would plausibly fix it, and fix_approach then says what to change. Not for things that need investigation first, secrets, or anything outside the repository.
 - Quiet things (all zero, baselines) are not findings; mention them in the summary.
 
-status: ACTION if any high finding, ATTENTION if any medium, otherwise OK.
+status: ACTION if any high finding, ATTENTION if any medium, otherwise OK (the program enforces this from the severities).
 Write in English. Prefer numbers to adjectives. summary is at most about 120 words of Markdown; renovate is a short Markdown list of open PRs worth the owner's attention (or a single line saying none)."""
 
 
@@ -475,13 +475,32 @@ def open_findings() -> dict[str, dict]:
     return found
 
 
+def derive_status(findings: list[dict]) -> str:
+    severities = {f["severity"] for f in findings}
+    return "ACTION" if "high" in severities else "ATTENTION" if "medium" in severities else "OK"
+
+
+def accepted_findings() -> dict[str, dict]:
+    """Findings the owner closed as "not planned": known and accepted, never reported again."""
+    issues = github("GET", f"/repos/{GITHUB_REPO}/issues?state=closed&labels={FINDING_LABEL}&per_page=100")
+    found = {}
+    for issue in issues:
+        if "pull_request" in issue or issue["user"].get("type") != "Bot" or issue.get("state_reason") != "not_planned":
+            continue
+        m = re.search(r"<!-- soc-finding:([a-z0-9-]+) -->", issue.get("body") or "")
+        if m:
+            found[m.group(1)] = issue
+    return found
+
+
 def finding_body(f: dict, today: str) -> str:
     fix = f"\n\n**Possible fix:** {f['fix_approach']}" if f["fixable"] and f["fix_approach"] else ""
     return defang(
         f"{marker(f['key'])}\n**Severity:** {f['severity']} · first seen {today}\n\n"
         f"**Evidence:** {f['evidence']}\n\n**Recommendation:** {f['recommendation']}{fix}\n\n"
         "---\n_Opened by the SOC agent. It comments when the finding is seen again and closes "
-        "the issue when it reports the finding resolved._"
+        "the issue when it reports the finding resolved. Close it as **not planned** to accept "
+        "it: the agent then stops reporting it._"
     )
 
 
@@ -719,6 +738,7 @@ def main() -> int:
         print(f"posture={posture} breaches={breaches} model={model}")
 
         existing = open_findings()
+        accepted = accepted_findings()
         client = claude_client()
         today = dt.date.today().isoformat()
         prompt = (
@@ -727,6 +747,9 @@ def main() -> int:
             + (f". Escalation rules breached: {', '.join(breaches)}." if breaches else ". No escalation rule breached.")
             + "\n\nOpen findings from earlier runs (reuse a key if it is the same problem):\n"
             + ("\n".join(f"- {k}: {i['title']}" for k, i in existing.items()) or "none")
+            + "\n\nAccepted by the owner (closed as not planned). Do not report these again, "
+            + "unless the problem got clearly worse; then use a new key:\n"
+            + ("\n".join(f"- {k}: {i['title']}" for k, i in accepted.items()) or "none")
             + "\n\nInvestigate and report today's findings."
         )
         result = run_model(client, model, SYSTEM, build_tools(grafana, panels), prompt,
@@ -734,6 +757,10 @@ def main() -> int:
         for f in result["findings"]:
             f["key"] = slug(f["key"])
         result["resolved_keys"] = [slug(k) for k in result["resolved_keys"]]
+        # Findings the owner closed as not planned stay quiet, even if the model reports them.
+        result["findings"] = [f for f in result["findings"] if f["key"] not in accepted]
+        # The status follows the severities, so a day with only low findings does not push.
+        result["status"] = derive_status(result["findings"])
 
         if dry_run:
             print(json.dumps(result, indent=2))

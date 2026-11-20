@@ -8,6 +8,8 @@ Type=oneshot
 User=soc-agent
 Group=soc-agent
 EnvironmentFile=/etc/soc-agent/env
+# Dates in issue titles follow Danish time, not the container's UTC.
+Environment=TZ=Europe/Copenhagen
 ExecStart=/opt/soc-agent/venv/bin/python -I /opt/soc-agent/soc_agent.py
 TimeoutStartSec=30min
 
