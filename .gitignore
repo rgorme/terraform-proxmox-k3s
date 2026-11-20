@@ -46,3 +46,5 @@ ansible/secrets.yml
 # Ignore any local OS files
 .DS_Store
 Thumbs.db 
+# Python
+__pycache__/
