@@ -324,11 +324,19 @@ def main() -> int:
     try:
         grafana = Grafana()
         dash = grafana.get(f"/api/dashboards/uid/{DASHBOARD_UID}")["dashboard"]
-        panels = {p["title"]: p for p in dash["panels"] if p.get("targets")}
+        # Titles are not unique (the "Targets down" tile and table share one),
+        # so the tool sees "<title> (<type>)" for repeats, and the posture
+        # rules read the stat tiles only.
+        panels: dict[str, dict] = {}
+        for p in dash["panels"]:
+            if p.get("targets"):
+                key = p["title"] if p["title"] not in panels else f"{p['title']} ({p['type']})"
+                panels[key] = p
+        tiles = {p["title"]: p for p in dash["panels"] if p.get("type") == "stat" and p.get("targets")}
 
         posture = {}
         for title in ESCALATE_IF:
-            panel = panels.get(title)
+            panel = tiles.get(title)
             posture[title] = last_value(grafana.query(panel["targets"][0], 24)) if panel else None
         breaches = [t for t, rule in ESCALATE_IF.items() if rule(posture[t])]
         model = ESCALATION_MODEL if breaches else ROUTINE_MODEL
