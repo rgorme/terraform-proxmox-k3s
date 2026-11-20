@@ -25,6 +25,13 @@ One run:
      Mobile turns into a push; OK digests are not. A run that breaks posts an
      assigned failure issue (label soc-agent-failure).
 
+Watch mode (--watch, every 15 minutes, no Claude): after a merge that touched
+apps/ or charts/, if an Argo CD application the merge affects is not Healthy
+and Synced in two checks 15 minutes apart, the program opens a revert PR on
+soc-agent/revert-<pr> (owner as reviewer and assignee). When a clean revert is
+not possible it opens an assigned issue instead. It logs in to Grafana only
+when such a merge happened in the last 3 hours.
+
 Everything the tools return (log lines, PR texts, file contents) is data an
 attacker may control. The models have no tool that changes anything; only
 this program writes: issues, comments, branches under soc-agent/ and PRs.
@@ -40,6 +47,7 @@ import re
 import sys
 import time
 import traceback
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -68,6 +76,16 @@ FIX_BRANCH_PREFIX = "soc-agent/fix-"
 # are out of reach on purpose.
 EDITABLE_PATH = re.compile(r"^(apps|charts)/[A-Za-z0-9._/-]+\.(ya?ml|json|j2|tpl)$")
 MAX_FIX_PRS_PER_RUN = 2
+REVERT_LABEL = "soc-agent-revert"
+REVERT_BRANCH_PREFIX = "soc-agent/revert-"
+# Files a revert may restore: whatever the merge changed in the deployed parts.
+REVERTABLE_PATH = re.compile(r"^(apps|charts)/[A-Za-z0-9._/-]+$")
+WATCH_WINDOW_HOURS = 3
+WATCH_SETTLE_MINUTES = 10
+WATCH_CONFIRM_MINUTES = 14
+APPS_PANEL = "Applications"
+# systemd's StateDirectory=soc-agent sets STATE_DIRECTORY.
+WATCH_STATE = os.environ.get("STATE_DIRECTORY", "/var/lib/soc-agent") + "/watch.json"
 MAX_EDITS_PER_FIX = 5
 # Issues that need the owner are assigned to them: GitHub Mobile pushes
 # assignments, not activity on watched repositories. OK digests are not
@@ -282,7 +300,7 @@ def defang(text: str) -> str:
     return re.sub(r"!\[", "[", text)
 
 
-def report_failure(err: str) -> None:
+def report_failure(err: str, comment_if_open: bool = True) -> None:
     """Open (or comment on) one failure issue, so a broken run is not silent.
 
     If GitHub itself is unreachable this cannot report; the run still exits
@@ -292,6 +310,8 @@ def report_failure(err: str) -> None:
         today = dt.date.today().isoformat()
         tail = "```\n" + defang(err[-3000:]) + "\n```"
         open_issues = github("GET", f"/repos/{GITHUB_REPO}/issues?state=open&labels={FAILURE_LABEL}&per_page=1")
+        if open_issues and not comment_if_open:
+            return
         if open_issues:
             github("POST", f"/repos/{GITHUB_REPO}/issues/{open_issues[0]['number']}/comments",
                    {"body": f"Failed again on {today}.\n\n{tail}"})
@@ -694,6 +714,210 @@ def propose_fixes(client, rows) -> list[str]:
     return notes
 
 
+# ---------------------------------------------------------------- watch
+
+
+def parse_time(value: str) -> dt.datetime:
+    return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def recent_cluster_merges(hours: float) -> list[tuple[dict, list[dict]]]:
+    """Merged gitops PRs from the last hours that changed apps/ or charts/, with their files."""
+    since = dt.datetime.now(dt.UTC) - dt.timedelta(hours=hours)
+    prs = github("GET", f"/repos/{GITHUB_REPO}/pulls?state=closed&sort=updated&direction=desc&per_page=50")
+    found = []
+    for pr in prs:
+        if not pr.get("merged_at") or parse_time(pr["merged_at"]) < since:
+            continue
+        files = github("GET", f"/repos/{GITHUB_REPO}/pulls/{pr['number']}/files?per_page=100")
+        if any(REVERTABLE_PATH.match(f["filename"]) for f in files):
+            found.append((pr, files))
+    return found
+
+
+def affected_apps(files: list[dict]) -> set[str]:
+    """Argo CD applications a change can affect. Each app lives in apps/<name>/;
+    a change under charts/ may affect any app, which is shown as "*"."""
+    apps = set()
+    for f in files:
+        parts = f["filename"].split("/")
+        if parts[0] == "apps" and len(parts) > 2:
+            apps.add(parts[1])
+        elif parts[0] == "charts":
+            apps.add("*")
+    return apps
+
+
+def app_states(grafana: Grafana, panels: dict[str, dict]) -> dict[str, tuple[str, str]]:
+    """name -> (sync, health) from the SOC Overview "Applications" table."""
+    result = grafana.query(panels[APPS_PANEL]["targets"][0], 1)
+    states = {}
+    for frame in result.get("frames", []):
+        names = [f["name"] for f in frame["schema"]["fields"]]
+        values = frame["data"]["values"]
+        if not {"name", "sync_status", "health_status"} <= set(names):
+            continue
+        col = {n: values[names.index(n)] for n in ("name", "sync_status", "health_status")}
+        for name, sync, health in zip(col["name"], col["sync_status"], col["health_status"]):
+            states[name] = (sync, health)
+    return states
+
+
+def file_at(path: str, ref: str) -> tuple[str | None, str | None]:
+    """(content, blob sha) of a file at a ref, or (None, None) if it does not exist there."""
+    try:
+        data = github("GET", f"/repos/{GITHUB_REPO}/contents/{urllib.parse.quote(path)}?ref={urllib.parse.quote(ref)}")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None, None
+        raise
+    return base64.b64decode(data["content"]).decode(), data["sha"]
+
+
+def open_revert_pr(pr: dict, files: list[dict], bad: dict[str, tuple[str, str]]) -> str:
+    """Restore the files a merge changed under apps/ and charts/ on soc-agent/revert-<pr>.
+
+    Refuses (and opens an assigned issue instead) when a file was renamed or
+    changed again on main after the merge, because restoring it would undo
+    more than this merge.
+    """
+    branch = f"{REVERT_BRANCH_PREFIX}{pr['number']}"
+    if not branch.startswith("soc-agent/"):
+        raise RuntimeError(f"refusing to write to branch {branch}")
+    evidence = ", ".join(f"`{a}` {h}/{s}" for a, (s, h) in sorted(bad.items()))
+    merge_sha = pr["merge_commit_sha"]
+    parent_sha = github("GET", f"/repos/{GITHUB_REPO}/git/commits/{merge_sha}")["parents"][0]["sha"]
+    main_sha = github("GET", f"/repos/{GITHUB_REPO}/git/ref/heads/main")["object"]["sha"]
+
+    plan, problems = [], []
+    for f in files:
+        path = f["filename"]
+        if not REVERTABLE_PATH.match(path):
+            continue
+        if f["status"] == "renamed":
+            problems.append(f"`{path}` was renamed")
+            continue
+        now, _ = file_at(path, main_sha)
+        merged, _ = file_at(path, merge_sha)
+        if now != merged:
+            problems.append(f"`{path}` changed on main after the merge")
+            continue
+        before, _ = file_at(path, parent_sha)
+        plan.append((path, before))
+
+    if problems or not plan:
+        issue = github("POST", f"/repos/{GITHUB_REPO}/issues", {
+            "title": defang(f"Deploy of #{pr['number']} is unhealthy; revert it by hand")[:200],
+            "body": defang(
+                f"After #{pr['number']} ({pr['title']}) was merged, Argo CD reports {evidence} "
+                f"in two checks {WATCH_CONFIRM_MINUTES}+ minutes apart.\n\n"
+                f"The SOC agent did not open a revert PR: {'; '.join(problems) or 'nothing to revert under apps/ or charts/'}."
+            ),
+            "labels": [REVERT_LABEL],
+            "assignees": [OWNER],
+        })
+        return f"issue #{issue['number']} (manual revert of #{pr['number']})"
+
+    github("POST", f"/repos/{GITHUB_REPO}/git/refs", {"ref": f"refs/heads/{branch}", "sha": main_sha})
+    for path, before in plan:
+        _, sha_on_branch = file_at(path, branch)
+        if before is None:
+            if sha_on_branch:
+                github("DELETE", f"/repos/{GITHUB_REPO}/contents/{urllib.parse.quote(path)}", {
+                    "message": f"revert: #{pr['number']} {pr['title']}", "sha": sha_on_branch, "branch": branch,
+                })
+        else:
+            body = {"message": f"revert: #{pr['number']} {pr['title']}",
+                    "content": base64.b64encode(before.encode()).decode(), "branch": branch}
+            if sha_on_branch:
+                body["sha"] = sha_on_branch
+            github("PUT", f"/repos/{GITHUB_REPO}/contents/{urllib.parse.quote(path)}", body)
+    revert = github("POST", f"/repos/{GITHUB_REPO}/pulls", {
+        "title": defang(f"revert: {pr['title']}")[:200],
+        "head": branch,
+        "base": "main",
+        "body": defang(
+            f"Reverts #{pr['number']}.\n\nArgo CD reports {evidence} in two checks "
+            f"{WATCH_CONFIRM_MINUTES}+ minutes apart after the merge at {pr['merged_at']}.\n\n"
+            f"**Files restored to their state before the merge:** {', '.join(f'`{p}`' for p, _ in plan)}\n\n"
+            "---\n_Opened by the SOC agent's post-merge check. Merging deploys the revert; "
+            "the agent never merges its own PRs._"
+        ),
+    })
+    github("POST", f"/repos/{GITHUB_REPO}/issues/{revert['number']}/labels", {"labels": [REVERT_LABEL]})
+    github("POST", f"/repos/{GITHUB_REPO}/issues/{revert['number']}/assignees", {"assignees": [OWNER]})
+    try:
+        github("POST", f"/repos/{GITHUB_REPO}/pulls/{revert['number']}/requested_reviewers", {"reviewers": [OWNER]})
+    except Exception as exc:  # noqa: BLE001
+        print(f"could not request review on #{revert['number']}: {exc}", file=sys.stderr)
+    github("POST", f"/repos/{GITHUB_REPO}/issues/{pr['number']}/comments", {
+        "body": f"Argo CD reports this deploy as unhealthy; the SOC agent opened #{revert['number']} to revert it.",
+    })
+    return f"revert PR #{revert['number']} for #{pr['number']}"
+
+
+def load_state() -> dict:
+    try:
+        with open(WATCH_STATE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"pending": {}, "handled": []}
+
+
+def save_state(state: dict) -> None:
+    state["handled"] = state["handled"][-200:]
+    tmp = WATCH_STATE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f)
+    os.replace(tmp, WATCH_STATE)
+
+
+def watch(now: dt.datetime | None = None) -> list[str]:
+    """One post-merge check. Returns what it did."""
+    now = now or dt.datetime.now(dt.UTC)
+    state = load_state()
+    merges = [(pr, files) for pr, files in recent_cluster_merges(WATCH_WINDOW_HOURS)
+              if pr["number"] not in state["handled"]]
+    state["pending"] = {k: v for k, v in state["pending"].items()
+                        if int(k) in {pr["number"] for pr, _ in merges}}
+    settled = [(pr, files) for pr, files in merges
+               if now - parse_time(pr["merged_at"]) >= dt.timedelta(minutes=WATCH_SETTLE_MINUTES)]
+    if not settled:
+        save_state(state)
+        return []
+
+    grafana = Grafana()
+    dash = grafana.get(f"/api/dashboards/uid/{DASHBOARD_UID}")["dashboard"]
+    panels = {p["title"]: p for p in dash["panels"] if p.get("targets")}
+    if APPS_PANEL not in panels:
+        raise RuntimeError(f"SOC Overview has no {APPS_PANEL!r} panel")
+    states = app_states(grafana, panels)
+    if not states:
+        raise RuntimeError("no Argo CD application states (argocd_app_info missing?)")
+
+    done = []
+    for pr, files in settled:
+        apps = affected_apps(files)
+        bad = {a: st for a, st in states.items()
+               if ("*" in apps or a in apps) and st != ("Synced", "Healthy") and st[1] != "Progressing"}
+        key = str(pr["number"])
+        if not bad:
+            state["pending"].pop(key, None)
+            continue
+        first = state["pending"].get(key)
+        if not first:
+            state["pending"][key] = now.isoformat()
+            done.append(f"#{pr['number']}: {', '.join(sorted(bad))} not healthy, checking again")
+            continue
+        if now - parse_time(first) < dt.timedelta(minutes=WATCH_CONFIRM_MINUTES):
+            continue
+        done.append(open_revert_pr(pr, files, bad))
+        state["pending"].pop(key, None)
+        state["handled"].append(pr["number"])
+    save_state(state)
+    return done
+
+
 # ---------------------------------------------------------------- main
 
 
@@ -714,6 +938,17 @@ def render_digest(result: dict, rows, closed, fix_notes, breaches) -> str:
 
 
 def main() -> int:
+    if "--watch" in sys.argv:
+        try:
+            for line in watch():
+                print(line)
+            return 0
+        except Exception:
+            err = traceback.format_exc()
+            print(err, file=sys.stderr)
+            # Every 15 minutes: open one failure issue, but do not comment on it each run.
+            report_failure(err, comment_if_open=False)
+            return 1
     dry_run = "--dry-run" in sys.argv
     no_fixes = "--no-fixes" in sys.argv or os.environ.get("SOC_AGENT_FIXES", "on") == "off"
     try:

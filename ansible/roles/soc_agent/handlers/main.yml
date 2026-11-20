@@ -6,5 +6,8 @@
 # A changed OnCalendar only takes effect when the timer is restarted.
 - name: Restart the timer
   ansible.builtin.systemd_service:
-    name: soc-agent.timer
+    name: "{{ item }}"
     state: restarted
+  loop:
+    - soc-agent.timer
+    - soc-agent-watch.timer
