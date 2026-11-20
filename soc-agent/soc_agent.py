@@ -12,10 +12,11 @@ One run:
      Claude is reached without a static key: a token from Authentik's
      "anthropic" application is exchanged through Workload Identity
      Federation by the Anthropic SDK.
-  5. Posts the digest as a GitHub issue in gitops (label soc-digest). A run
-     that breaks posts a failure issue instead (label soc-agent-failure).
-     GitHub's issue notifications are the alerting channel, and the issues
-     are what later steps of the agent will pick up and fix.
+  5. Posts the digest as a GitHub issue in gitops (label soc-digest) as the
+     soc-agent GitHub App. ATTENTION and ACTION digests are assigned to the
+     owner, which GitHub Mobile turns into a push; OK digests are not. A run
+     that breaks posts an assigned failure issue (label soc-agent-failure).
+     The issues are what later steps of the agent will pick up and fix.
 
 Everything the tools return (log lines, PR texts) is data an attacker may
 control. The model has no tool that changes anything; only this program
@@ -35,6 +36,7 @@ import urllib.parse
 import urllib.request
 
 import anthropic
+import jwt
 from anthropic import beta_tool
 from anthropic.lib.credentials import WorkloadIdentityCredentials
 
@@ -50,6 +52,10 @@ ANTHROPIC_CLIENT_ID = "anthropic"
 GITHUB_REPO = "rgorme/gitops"
 DIGEST_LABEL = "soc-digest"
 FAILURE_LABEL = "soc-agent-failure"
+# Issues that need the owner are assigned to them: GitHub Mobile pushes
+# assignments, not activity on watched repositories. OK digests are not
+# assigned, so a quiet day does not buzz the phone.
+OWNER = GITHUB_REPO.split("/")[0]
 
 ROUTINE_MODEL = "claude-sonnet-5-5"
 ESCALATION_MODEL = "claude-fable-5-2"
@@ -214,12 +220,41 @@ def last_value(result: dict):
 # ---------------------------------------------------------------- GitHub
 
 
+GITHUB_HEADERS = {
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "soc-agent",
+}
+_github_token: dict = {}
+
+
+def github_token() -> str:
+    """An installation token for the soc-agent GitHub App (cached until near expiry).
+
+    The agent acts as soc-agent[bot], not as the owner, so its issues notify
+    the owner. The App is installed on the gitops repository only, with
+    Issues read/write and Pull requests / Contents read.
+    """
+    if _github_token.get("expires", 0) > time.time() + 300:
+        return _github_token["token"]
+    with open(env("SOC_AGENT_GITHUB_APP_KEY_FILE")) as f:
+        key = f.read()
+    now = int(time.time())
+    app_jwt = jwt.encode({"iat": now - 60, "exp": now + 540, "iss": env("SOC_AGENT_GITHUB_APP_CLIENT_ID")},
+                         key, algorithm="RS256")
+    app_auth = {**GITHUB_HEADERS, "Authorization": f"Bearer {app_jwt}"}
+    installation = json.loads(http("GET", f"https://api.github.com/repos/{GITHUB_REPO}/installation",
+                                    headers=app_auth))
+    token = json.loads(http("POST", f"https://api.github.com/app/installations/{installation['id']}/access_tokens",
+                            headers=app_auth, data={"repositories": [GITHUB_REPO.split("/")[1]]}))
+    expires = dt.datetime.fromisoformat(token["expires_at"].replace("Z", "+00:00")).timestamp()
+    _github_token.update(token=token["token"], expires=expires)
+    return token["token"]
+
+
 def github(method: str, path: str, data=None):
     return json.loads(http(method, "https://api.github.com" + path, data=data, headers={
-        "Authorization": f"Bearer {env('SOC_AGENT_GITHUB_TOKEN')}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "soc-agent",
+        **GITHUB_HEADERS, "Authorization": f"Bearer {github_token()}",
     }))
 
 
@@ -247,6 +282,7 @@ def report_failure(err: str) -> None:
                 "title": f"SOC agent run failed ({today})",
                 "body": f"The daily SOC run on soc-agent (192.168.1.63) failed.\n\n{tail}",
                 "labels": [FAILURE_LABEL],
+                "assignees": [OWNER],
             })
     except Exception as exc:  # noqa: BLE001
         print(f"could not report the failure to GitHub: {exc}", file=sys.stderr)
@@ -377,8 +413,10 @@ def main() -> int:
             print(title + "\n\n" + body)
             return 0
 
-        issue = github("POST", f"/repos/{GITHUB_REPO}/issues",
-                       {"title": title, "body": body, "labels": [DIGEST_LABEL]})
+        issue = github("POST", f"/repos/{GITHUB_REPO}/issues", {
+            "title": title, "body": body, "labels": [DIGEST_LABEL],
+            "assignees": [] if status == "OK" else [OWNER],
+        })
         print(f"{title}\n{issue['html_url']}")
         return 0
     except Exception:
