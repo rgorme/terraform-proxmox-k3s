@@ -753,13 +753,19 @@ def app_states(grafana: Grafana, panels: dict[str, dict]) -> dict[str, tuple[str
     result = grafana.query(panels[APPS_PANEL]["targets"][0], 1)
     states = {}
     for frame in result.get("frames", []):
-        names = [f["name"] for f in frame["schema"]["fields"]]
+        fields = frame["schema"]["fields"]
         values = frame["data"]["values"]
-        if not {"name", "sync_status", "health_status"} <= set(names):
+        names = [f["name"] for f in fields]
+        if {"name", "sync_status", "health_status"} <= set(names):  # table frame
+            col = {n: values[names.index(n)] for n in ("name", "sync_status", "health_status")}
+            for name, sync, health in zip(col["name"], col["sync_status"], col["health_status"]):
+                states[name] = (sync, health)
             continue
-        col = {n: values[names.index(n)] for n in ("name", "sync_status", "health_status")}
-        for name, sync, health in zip(col["name"], col["sync_status"], col["health_status"]):
-            states[name] = (sync, health)
+        # The API returns one frame per series, the labels on the value field.
+        for field in fields:
+            labels = field.get("labels") or {}
+            if {"name", "sync_status", "health_status"} <= set(labels):
+                states[labels["name"]] = (labels["sync_status"], labels["health_status"])
     return states
 
 
