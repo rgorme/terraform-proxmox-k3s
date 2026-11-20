@@ -12,10 +12,11 @@ One run:
      Claude is reached without a static key: a token from Authentik's
      "anthropic" application is exchanged through Workload Identity
      Federation by the Anthropic SDK.
-  5. Posts the digest as a GitHub issue in gitops (label soc-digest). A run
-     that breaks posts a failure issue instead (label soc-agent-failure).
-     GitHub's issue notifications are the alerting channel, and the issues
-     are what later steps of the agent will pick up and fix.
+  5. Posts the digest as a GitHub issue in gitops (label soc-digest) as the
+     soc-agent GitHub App. ATTENTION and ACTION digests are assigned to the
+     owner, which GitHub Mobile turns into a push; OK digests are not. A run
+     that breaks posts an assigned failure issue (label soc-agent-failure).
+     The issues are what later steps of the agent will pick up and fix.
 
 Everything the tools return (log lines, PR texts) is data an attacker may
 control. The model has no tool that changes anything; only this program
@@ -51,6 +52,10 @@ ANTHROPIC_CLIENT_ID = "anthropic"
 GITHUB_REPO = "rgorme/gitops"
 DIGEST_LABEL = "soc-digest"
 FAILURE_LABEL = "soc-agent-failure"
+# Issues that need the owner are assigned to them: GitHub Mobile pushes
+# assignments, not activity on watched repositories. OK digests are not
+# assigned, so a quiet day does not buzz the phone.
+OWNER = GITHUB_REPO.split("/")[0]
 
 ROUTINE_MODEL = "claude-sonnet-5-5"
 ESCALATION_MODEL = "claude-fable-5-2"
@@ -277,6 +282,7 @@ def report_failure(err: str) -> None:
                 "title": f"SOC agent run failed ({today})",
                 "body": f"The daily SOC run on soc-agent (192.168.1.63) failed.\n\n{tail}",
                 "labels": [FAILURE_LABEL],
+                "assignees": [OWNER],
             })
     except Exception as exc:  # noqa: BLE001
         print(f"could not report the failure to GitHub: {exc}", file=sys.stderr)
@@ -407,8 +413,10 @@ def main() -> int:
             print(title + "\n\n" + body)
             return 0
 
-        issue = github("POST", f"/repos/{GITHUB_REPO}/issues",
-                       {"title": title, "body": body, "labels": [DIGEST_LABEL]})
+        issue = github("POST", f"/repos/{GITHUB_REPO}/issues", {
+            "title": title, "body": body, "labels": [DIGEST_LABEL],
+            "assignees": [] if status == "OK" else [OWNER],
+        })
         print(f"{title}\n{issue['html_url']}")
         return 0
     except Exception:
