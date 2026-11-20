@@ -2,3 +2,9 @@
 - name: Reload systemd
   ansible.builtin.systemd_service:
     daemon_reload: true
+
+# A changed OnCalendar only takes effect when the timer is restarted.
+- name: Restart the timer
+  ansible.builtin.systemd_service:
+    name: soc-agent.timer
+    state: restarted

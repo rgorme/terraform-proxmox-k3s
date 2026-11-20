@@ -2,9 +2,11 @@
 Description=Run the SOC/ops agent every morning
 
 [Timer]
-OnCalendar=*-*-* 06:30:00 Europe/Copenhagen
-RandomizedDelaySec=10min
-# Catch up after the container was down at 06:30.
+# The digest should land around 08:00; a run takes under a minute (a few
+# minutes when it escalates to Fable), so it starts at 07:58 sharp.
+OnCalendar=*-*-* 07:58:00 Europe/Copenhagen
+AccuracySec=1s
+# Catch up after the container was down at that time.
 Persistent=true
 
 [Install]

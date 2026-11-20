@@ -99,7 +99,9 @@
   loop:
     - soc-agent.service
     - soc-agent.timer
-  notify: Reload systemd
+  notify:
+    - Reload systemd
+    - Restart the timer
 
 - name: Enable the daily timer
   ansible.builtin.systemd_service:
