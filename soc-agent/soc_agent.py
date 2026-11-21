@@ -1204,6 +1204,27 @@ def watch(now: dt.datetime | None = None) -> list[str]:
 # ---------------------------------------------------------------- main
 
 
+def close_old_digests(current: int) -> list[int]:
+    """Close the agent's older open digests; only the newest one stays open.
+
+    Findings live in their own issues, so an old digest holds nothing that is
+    still open. Issues people opened with the label are left alone.
+    """
+    closed = []
+    for issue in github("GET", f"/repos/{GITHUB_REPO}/issues?state=open&labels={DIGEST_LABEL}&per_page=100"):
+        if issue["number"] >= current or "pull_request" in issue or issue["user"].get("type") != "Bot":
+            continue
+        try:
+            github("POST", f"/repos/{GITHUB_REPO}/issues/{issue['number']}/comments",
+                   {"body": f"Superseded by #{current}."})
+            github("PATCH", f"/repos/{GITHUB_REPO}/issues/{issue['number']}",
+                   {"state": "closed", "state_reason": "completed"})
+            closed.append(issue["number"])
+        except Exception as exc:  # noqa: BLE001 - an old digest left open is harmless
+            print(f"could not close digest #{issue['number']}: {exc}", file=sys.stderr)
+    return closed
+
+
 def render_digest(result: dict, rows, closed, fix_notes, breaches) -> str:
     lines = [f"Status: {result['status']}", "", "## Summary", result["summary"], "", "## Findings"]
     if rows:
@@ -1308,7 +1329,9 @@ def main() -> int:
             "labels": [DIGEST_LABEL],
             "assignees": [] if status == "OK" else [OWNER],
         })
-        print(f"SOC digest {today}: {status}\n{issue['html_url']}\nfindings={len(rows)} closed={len(closed)} fixes={fix_notes}")
+        superseded = close_old_digests(issue["number"])
+        print(f"SOC digest {today}: {status}\n{issue['html_url']}\nfindings={len(rows)} closed={len(closed)} "
+              f"fixes={fix_notes} superseded={superseded}")
         return 0
     except Exception:
         err = traceback.format_exc()
