@@ -202,6 +202,15 @@
         state: directory
         mode: '0700'
 
+    # Must exist before k3s restarts with audit-policy-file set, or the API
+    # server will not start.
+    - name: Install Kubernetes audit policy
+      ansible.builtin.copy:
+        src: k3s-audit-policy.yaml
+        dest: /etc/rancher/k3s/audit-policy.yaml
+        mode: '0600'
+      notify: Restart K3s server
+
     - name: Configure K3s server
       ansible.builtin.template:
         src: k3s-server-config.yaml.j2
