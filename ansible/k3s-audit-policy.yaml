@@ -1,0 +1,72 @@
+# Kubernetes API audit policy for the k3s servers. The log is written to
+# /var/lib/rancher/k3s/server/logs/audit.log, Alloy on the masters ships it to
+# Loki ({job="kubernetes-audit"}), and the SOC Overview's audit panels read it.
+#
+# Aim: who changed what, who read secrets, who exec'd into pods. Never request
+# or response bodies (Metadata only), and none of the controller churn that
+# would drown it. The first matching rule wins.
+apiVersion: audit.k8s.io/v1
+kind: Policy
+omitStages:
+  - RequestReceived
+rules:
+  # Health checks, metrics and API discovery.
+  - level: None
+    nonResourceURLs:
+      - /healthz*
+      - /livez*
+      - /readyz*
+      - /metrics
+      - /version
+      - /openapi/*
+      - /api
+      - /apis
+  # Leader election, heartbeats, events and endpoints: constant and harmless.
+  - level: None
+    resources:
+      - group: coordination.k8s.io
+        resources: [leases]
+      - group: ""
+        resources: [events, endpoints]
+      - group: events.k8s.io
+        resources: [events]
+      - group: discovery.k8s.io
+        resources: [endpointslices]
+  # Token and access reviews come from kube-rbac-proxy and friends on every
+  # scrape.
+  - level: None
+    resources:
+      - group: authentication.k8s.io
+      - group: authorization.k8s.io
+  # Kubelets and k3s's own control plane.
+  - level: None
+    userGroups:
+      - system:nodes
+  - level: None
+    users:
+      - system:apiserver
+      - system:kube-proxy
+      - system:kube-scheduler
+      - system:kube-controller-manager
+      - system:k3s-controller
+      - system:k3s-supervisor
+  # Longhorn updates its own volume, engine and replica objects many times a
+  # minute.
+  - level: None
+    userGroups:
+      - system:serviceaccounts:longhorn-system
+  # Secret access by anyone left, reads included.
+  - level: Metadata
+    resources:
+      - group: ""
+        resources: [secrets, serviceaccounts/token]
+  # Getting a shell or a tunnel into the cluster.
+  - level: Metadata
+    resources:
+      - group: ""
+        resources: [pods/exec, pods/attach, pods/portforward, pods/proxy, services/proxy, nodes/proxy]
+  # Other reads are not interesting enough for their volume.
+  - level: None
+    verbs: [get, list, watch]
+  # Every remaining write: create, update, patch, delete.
+  - level: Metadata

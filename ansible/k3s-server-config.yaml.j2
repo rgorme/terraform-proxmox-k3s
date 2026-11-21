@@ -19,3 +19,10 @@ kube-apiserver-arg:
   - "oidc-username-prefix=oidc:"
   - {{ ('oidc-groups-claim=' ~ k3s_oidc_groups_claim) | to_json }}
   - "oidc-groups-prefix=oidc:"
+  # API audit log, see k3s-audit-policy.yaml. Rotated at 100 MB, 3 old files
+  # kept for at most 7 days; Loki has the long history.
+  - "audit-policy-file=/etc/rancher/k3s/audit-policy.yaml"
+  - "audit-log-path=/var/lib/rancher/k3s/server/logs/audit.log"
+  - "audit-log-maxsize=100"
+  - "audit-log-maxbackup=3"
+  - "audit-log-maxage=7"
