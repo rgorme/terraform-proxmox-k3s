@@ -912,6 +912,20 @@ def open_fix_branches() -> set[str]:
     return {p["head"]["ref"] for p in prs}
 
 
+def files_in_open_reverts() -> dict[str, int]:
+    """path -> PR number for files that open soc-agent revert PRs change.
+
+    Read just before a fix PR opens: the watch runs every 15 minutes and may
+    have reverted the same merge while the digest was still thinking.
+    """
+    taken = {}
+    for pr in github("GET", f"/repos/{GITHUB_REPO}/pulls?state=open&per_page=100"):
+        if pr["head"]["ref"].startswith(REVERT_BRANCH_PREFIX):
+            for f in github("GET", f"/repos/{GITHUB_REPO}/pulls/{pr['number']}/files?per_page=100"):
+                taken[f["filename"]] = pr["number"]
+    return taken
+
+
 def open_fix_pr(issue: dict, plan: dict, edits: dict[str, str]) -> dict:
     """Commit the edits to soc-agent/fix-<issue> and open a PR. Never touches main."""
     branch = f"{FIX_BRANCH_PREFIX}{issue['number']}"
@@ -982,6 +996,15 @@ def propose_fixes(client, rows) -> list[str]:
                     "body": defang(f"{NO_FIX_MARKER}:\n\n{plan['explanation']}"),
                 })
                 notes.append(f"no fix for #{issue['number']}")
+                continue
+            overlap = {p: n for p, n in files_in_open_reverts().items() if p in edits}
+            if overlap:
+                refs = ", ".join(f"#{n}" for n in sorted(set(overlap.values())))
+                github("POST", f"/repos/{GITHUB_REPO}/issues/{issue['number']}/comments", {
+                    "body": f"No fix PR: the open revert {refs} already changes {', '.join(sorted(overlap))}. "
+                            "Review that one instead.",
+                })
+                notes.append(f"#{issue['number']}: revert {refs} already open")
                 continue
             pr = open_fix_pr(issue, plan, edits)
             notes.append(f"PR #{pr['number']} for #{issue['number']}")
