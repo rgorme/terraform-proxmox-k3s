@@ -12,6 +12,9 @@ EnvironmentFile=/etc/soc-agent/env
 Environment=TZ=Europe/Copenhagen
 ExecStart=/opt/soc-agent/venv/bin/python -I /opt/soc-agent/soc_agent.py
 TimeoutStartSec=30min
+# Remembers which exposed critical CVEs were escalated (escalated-cves.json).
+StateDirectory=soc-agent
+StateDirectoryMode=0700
 
 # It reads attacker-controlled input, so it gets as little as possible.
 NoNewPrivileges=true

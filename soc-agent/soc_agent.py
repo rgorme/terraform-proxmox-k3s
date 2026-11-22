@@ -1320,7 +1320,6 @@ def main() -> int:
             return 0
 
         rows, closed = sync_findings(result["findings"], result["resolved_keys"], existing, today)
-        save_escalated(escalated, new_critical, critical_ids, dt.date.today())
         fix_notes = [] if no_fixes else propose_fixes(client, rows)
         status = result["status"]
         issue = github("POST", f"/repos/{GITHUB_REPO}/issues", {
@@ -1330,6 +1329,12 @@ def main() -> int:
             "assignees": [] if status == "OK" else [OWNER],
         })
         superseded = close_old_digests(issue["number"])
+        # Last, so a failure here can never cost the day's digest; at worst the
+        # next run escalates the same CVEs again.
+        try:
+            save_escalated(escalated, new_critical, critical_ids, dt.date.today())
+        except OSError as exc:
+            print(f"could not save escalated CVEs: {exc}", file=sys.stderr)
         print(f"SOC digest {today}: {status}\n{issue['html_url']}\nfindings={len(rows)} closed={len(closed)} "
               f"fixes={fix_notes} superseded={superseded}")
         return 0
